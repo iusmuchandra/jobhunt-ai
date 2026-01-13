@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import AnalyticsDashboard from '@/components/AnalyticsDashboard';
 import { useEffect, useState, useMemo } from 'react';
@@ -20,13 +20,10 @@ import {
   Briefcase, 
   TrendingUp, 
   Sparkles, 
-  ExternalLink, 
   Building2, 
   MapPin, 
   Calendar, 
   Zap, 
-  Filter, 
-  Search,
   Loader2,
   ArrowRight
 } from 'lucide-react';
@@ -85,47 +82,48 @@ export default function DashboardPage() {
 
   // --- Data Loading ---
   useEffect(() => {
+    // 1. First safety check
     if (!user) return;
+
+    // 2. CRITICAL FIX: Capture UID here as a constant string.
+    // TypeScript now knows 'userId' is a string and cannot change to null.
+    const userId = user.uid;
 
     async function fetchData() {
       setLoadingData(true);
 
       try {
-        // 1. Load Stats
-        let currentStats = stats;
-        if (stats.jobsFound === 0) {
-            const [matchesCount, appsCount, interviewsCount] = await Promise.all([
-            getCountFromServer(
-                query(collection(db, 'user_job_matches'), where('userId', '==', user.uid))
-            ),
-            getCountFromServer(
-                query(collection(db, 'applications'), where('userId', '==', user.uid))
-            ),
-            getCountFromServer(
-                query(
-                collection(db, 'applications'),
-                where('userId', '==', user.uid),
-                where('status', '==', 'interview')
-                )
-            )
-            ]);
+        // 3. Use 'userId' (the variable) in all queries, NEVER 'user.uid'
+        const [matchesCount, appsCount, interviewsCount] = await Promise.all([
+          getCountFromServer(
+              query(collection(db, 'user_job_matches'), where('userId', '==', userId))
+          ),
+          getCountFromServer(
+              query(collection(db, 'applications'), where('userId', '==', userId))
+          ),
+          getCountFromServer(
+              query(
+              collection(db, 'applications'),
+              where('userId', '==', userId),
+              where('status', '==', 'interview')
+              )
+          )
+        ]);
 
-            currentStats = {
-                jobsFound: matchesCount.data().count,
-                jobsApplied: appsCount.data().count,
-                interviews: interviewsCount.data().count
-            };
-            setStats(currentStats);
-        }
+        setStats({
+            jobsFound: matchesCount.data().count,
+            jobsApplied: appsCount.data().count,
+            interviews: interviewsCount.data().count
+        });
 
-        // 2. Load Top Matches (Buffer of 20)
+        // 4. Use 'userId' variable here too
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
-          where('userId', '==', user.uid),
+          where('userId', '==', userId),
           orderBy('matchScore', 'desc'),
           orderBy('notifiedAt', 'desc'),
-          limit(20) // INCREASED LIMIT: Fetch 20 to have a buffer for filtering
+          limit(20)
         );
 
         const matchesSnapshot = await getDocs(q);
@@ -147,7 +145,7 @@ export default function DashboardPage() {
           return;
         }
 
-        // Fetch jobs (Chunking logic maintained for safety)
+        // Fetch jobs (Chunking logic)
         const chunks = [];
         for (let i = 0; i < jobIds.length; i += 10) {
             chunks.push(jobIds.slice(i, i + 10));
@@ -264,7 +262,7 @@ export default function DashboardPage() {
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Link href="/jobs">
+          <Link href="/jobs" className="block h-full">
             <div className="group relative cursor-pointer h-full">
               <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 to-cyan-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
               <div className="relative bg-gradient-to-br from-blue-500/10 to-cyan-500/10 backdrop-blur-xl border border-blue-500/20 rounded-3xl p-8 h-full hover:border-blue-400/40 transition-all duration-300 hover:scale-[1.02]">
@@ -286,7 +284,7 @@ export default function DashboardPage() {
             </div>
           </Link>
 
-          <Link href="/applications">
+          <Link href="/applications" className="block h-full">
             <div className="group relative cursor-pointer h-full">
               <div className="absolute inset-0 bg-gradient-to-br from-green-500/20 to-emerald-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
               <div className="relative bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-xl border border-green-500/20 rounded-3xl p-8 h-full hover:border-green-400/40 transition-all duration-300 hover:scale-[1.02]">
@@ -302,7 +300,7 @@ export default function DashboardPage() {
             </div>
           </Link>
 
-          <Link href="/applications?filter=interview">
+          <Link href="/applications?filter=interview" className="block h-full">
             <div className="group relative cursor-pointer h-full">
                <div className="absolute inset-0 bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
               <div className="relative bg-gradient-to-br from-purple-500/10 to-pink-500/10 backdrop-blur-xl border border-purple-500/20 rounded-3xl p-8 h-full hover:border-purple-400/40 transition-all duration-300 hover:scale-[1.02]">
@@ -319,7 +317,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* Market Intelligence Section - INSERTED HERE */}
+        {/* Market Intelligence Section */}
         <div className="space-y-4">
           <h2 className="text-2xl font-bold flex items-center gap-2">
             <TrendingUp className="w-6 h-6 text-blue-400" />
@@ -355,8 +353,8 @@ export default function DashboardPage() {
               <>
                 {/* SLICE TO SHOW ONLY TOP 5 AFTER FILTERING */}
                 {filteredMatches.slice(0, 5).map(match => (
-                  <Link key={match.id} href={`/jobs/${match.jobId}`}>
-                    <div className="group relative cursor-pointer mb-4">
+                  <Link key={match.id} href={`/jobs/${match.jobId}`} className="block mb-4">
+                    <div className="group relative cursor-pointer">
                       <div className="absolute inset-0 bg-gradient-to-r from-blue-500/0 via-purple-500/5 to-pink-500/0 rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
                       <div className="relative bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl p-6 hover:border-gray-700 transition-all duration-300">
                         <div className="flex flex-col md:flex-row items-start justify-between gap-6">
