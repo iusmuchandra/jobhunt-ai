@@ -1,9 +1,9 @@
 import Link from 'next/link';
 import { adminDb } from '@/lib/firebase-admin'; 
 import { Button } from '@/components/ui/button';
-import SpotlightCard from '@/components/SpotlightCard'; // Ensure this file exists!
+import SpotlightCard from '@/components/SpotlightCard'; 
 import { 
-  Sparkles, ArrowRight, FileText, Shield, Zap, Globe, TrendingUp
+  ArrowRight, FileText, Shield, Zap, Globe, TrendingUp
 } from 'lucide-react';
 
 // --- REAL DATA FETCHING ---
@@ -25,7 +25,6 @@ async function getStats() {
       .get();
     const newJobsToday = newJobsSnapshot.data().count;
 
-    // Estimate if companies collection doesn't exist
     const estimatedCompanies = Math.floor(jobCount / 3) > 500 ? Math.floor(jobCount / 3) : "500+";
 
     return {
@@ -53,24 +52,11 @@ export default async function Home() {
   return (
     <main className="min-h-screen bg-black text-white p-4 md:p-6 font-sans selection:bg-purple-500/30 relative overflow-hidden">
       
-      {/* 10x UPGRADE: Noise Texture Overlay */}
+      {/* Noise Texture Overlay */}
       <div className="fixed inset-0 opacity-[0.03] pointer-events-none z-50 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] mix-blend-overlay"></div>
 
-      {/* Header */}
-      <header className="flex justify-between items-center mb-12 max-w-[1600px] mx-auto pt-6 relative z-10">
-        <div className="flex items-center gap-2">
-            <div className="h-8 w-8 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-purple-500/20">
-                <Sparkles className="h-5 w-5 text-white" />
-            </div>
-            <span className="font-bold text-xl tracking-tight">JobHunt AI</span>
-        </div>
-        <div className="flex gap-4">
-            <Link href="/login" className="text-sm font-medium text-gray-400 hover:text-white transition-colors py-2">Log in</Link>
-            <Link href="/signup">
-                <Button size="sm" className="bg-white text-black hover:bg-gray-200 rounded-full px-6 transition-transform hover:scale-105 active:scale-95">Get Started</Button>
-            </Link>
-        </div>
-      </header>
+      {/* spacer to push content down because Navbar is now 'fixed' at top */}
+      <div className="h-24 md:h-32"></div>
 
       {/* THE 10x BENTO GRID */}
       <div className="max-w-[1600px] mx-auto grid grid-cols-1 md:grid-cols-4 lg:grid-cols-6 lg:grid-rows-3 gap-6 h-auto lg:h-[800px] relative z-0">

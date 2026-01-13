@@ -30,41 +30,40 @@ export function Navigation() {
   const isPublicRoute = ['/', '/login', '/signup', '/pricing'].includes(pathname);
   const isHomePage = pathname === '/';
 
+  // 1. PUBLIC VIEW (Logged Out) - THE NEW GLASS DESIGN
   if (isPublicRoute && !user) {
     return (
-      <nav className={`sticky top-0 z-50 ${isHomePage ? 'bg-black/50 border-b border-white/10' : 'bg-white/50 border-b'} backdrop-blur-xl`}>
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2">
-              <Sparkles className={`h-8 w-8 ${isHomePage ? 'text-purple-400' : 'text-blue-600'}`} />
-              <span className={`text-2xl font-bold ${isHomePage ? 'text-white' : 'bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent'}`}>
-                JobHunt AI
-              </span>
-            </Link>
-
-            <div className="flex items-center gap-4">
-              <Link href="/pricing">
-                <Button variant="ghost" className={isHomePage ? 'text-white hover:bg-white/10' : ''}>
-                  Pricing
-                </Button>
-              </Link>
-              <Link href="/login">
-                <Button variant="ghost" className={isHomePage ? 'text-white hover:bg-white/10' : ''}>
-                  Log In
-                </Button>
-              </Link>
-              <Link href="/signup">
-                <Button className={isHomePage ? 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500' : ''}>
-                  Get Started
-                </Button>
-              </Link>
+      <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${
+        isHomePage 
+          ? 'bg-transparent backdrop-blur-none border-b border-transparent pt-6' 
+          : 'bg-black/80 backdrop-blur-xl border-b border-white/10'
+      }`}>
+        <div className="max-w-[1600px] mx-auto px-6 h-16 flex items-center justify-between">
+          {/* Logo */}
+          <Link href="/" className="flex items-center gap-2 group">
+            <div className="h-8 w-8 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-purple-500/20 group-hover:scale-110 transition-transform">
+              <Sparkles className="h-5 w-5 text-white" />
             </div>
+            <span className="font-bold text-xl tracking-tight text-white">JobHunt AI</span>
+          </Link>
+
+          {/* Links */}
+          <div className="flex items-center gap-6">
+            <Link href="/login" className="text-sm font-medium text-gray-400 hover:text-white transition-colors">
+              Log in
+            </Link>
+            <Link href="/signup">
+              <Button size="sm" className="bg-white text-black hover:bg-gray-200 rounded-full px-6 transition-transform hover:scale-105 active:scale-95">
+                Get Started
+              </Button>
+            </Link>
           </div>
         </div>
       </nav>
     );
   }
 
+  // 2. LOGGED IN VIEW - DASHBOARD NAVIGATION
   if (!user) return null;
 
   const navigation = [
