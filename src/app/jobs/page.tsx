@@ -51,6 +51,18 @@ interface MatchedJob extends Job {
   viewed?: boolean;
 }
 
+// Define explicit interface for Firestore Match Data to fix TypeScript inference
+interface FirestoreMatchData {
+  matchId: string;
+  jobId: string;
+  matchScore?: number;
+  matchReasons?: string[];
+  matchedKeywords?: string[];
+  notifiedAt?: any;
+  viewed?: boolean;
+  [key: string]: any;
+}
+
 // --- Component: Circular Progress ---
 const CircularProgress = ({ score, color }: { score: number; color: string }) => {
   const radius = 18;
@@ -210,10 +222,15 @@ export default function JobsPage() {
         return newCursors;
       });
 
-      const matchesData = matchesSnapshot.docs.map(doc => ({
-        matchId: doc.id,
-        ...doc.data()
-      }));
+      // --- FIX: Explicitly cast the mapped data to ensure TypeScript knows jobId exists ---
+      const matchesData: FirestoreMatchData[] = matchesSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          matchId: doc.id,
+          jobId: data.jobId, // Explicit extraction
+          ...data
+        } as FirestoreMatchData;
+      });
 
       const jobIds = matchesData.map(m => m.jobId).filter(Boolean);
       
