@@ -4,6 +4,7 @@
 import { adminDb } from '@/lib/firebase-admin';
 import { deepseek } from '@/lib/deepseek';
 import axios from 'axios';
+import { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 
 interface JobListing {
   title: string;
@@ -251,7 +252,10 @@ async function cleanupOldJobs(): Promise<void> {
     .get();
 
   const batch = adminDb.batch();
-  oldJobsSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+  
+  // FIX: Explicitly type 'doc' to QueryDocumentSnapshot to avoid "implicit any" error
+  oldJobsSnapshot.docs.forEach((doc: QueryDocumentSnapshot) => batch.delete(doc.ref));
+  
   await batch.commit();
 
   console.log(`Deleted ${oldJobsSnapshot.size} old jobs`);
