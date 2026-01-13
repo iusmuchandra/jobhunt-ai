@@ -222,12 +222,12 @@ export default function JobsPage() {
         return newCursors;
       });
 
-      // --- FIX: Explicitly cast the mapped data to ensure TypeScript knows jobId exists ---
+      // Explicitly cast the mapped data to ensure TypeScript knows jobId exists
       const matchesData: FirestoreMatchData[] = matchesSnapshot.docs.map(doc => {
         const data = doc.data();
         return {
           matchId: doc.id,
-          jobId: data.jobId, // Explicit extraction
+          jobId: data.jobId,
           ...data
         } as FirestoreMatchData;
       });
@@ -249,12 +249,25 @@ export default function JobsPage() {
       const allJobDocs = jobsSnapshots.flatMap(snap => snap.docs);
       
       const matchedJobs = allJobDocs.map(jobDoc => {
-        const jobData = jobDoc.data() as Job;
+        // Use partial to avoid 'id' conflict during spread
+        const jobData = jobDoc.data();
         const match = matchesData.find(m => m.jobId === jobDoc.id);
         
+        // FIX: Spread jobData first, THEN explicitly set id to overwrite any id in data
         return {
-          id: jobDoc.id,
           ...jobData,
+          id: jobDoc.id,
+          title: jobData.title,
+          company: jobData.company,
+          location: jobData.location,
+          type: jobData.type,
+          salary: jobData.salary,
+          postedAt: jobData.postedAt,
+          tags: jobData.tags,
+          url: jobData.url,
+          description: jobData.description,
+          requirements: jobData.requirements,
+          source: jobData.source,
           matchScore: match?.matchScore || 0,
           matchReasons: match?.matchReasons || [],
           matchedKeywords: match?.matchedKeywords || [],
