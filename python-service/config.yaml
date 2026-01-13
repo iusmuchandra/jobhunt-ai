@@ -1,0 +1,7 @@
+# JobHunt AI - Python Service Configuration
+headless: false  # Set to true for production
+slow_mo: 100     # Milliseconds between actions
+timeout: 30000   # Page timeout in milliseconds
+max_retries: 3
+human_delay_range: [2, 5]  # Seconds between applications
+session_persistence: true

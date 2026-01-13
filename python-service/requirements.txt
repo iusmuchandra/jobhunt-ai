@@ -1,0 +1,6 @@
+playwright==1.40.0
+firebase-admin==6.3.0
+tenacity==8.2.3
+aiofiles==23.2.1
+PyYAML==6.0.1
+python-dotenv==1.0.0

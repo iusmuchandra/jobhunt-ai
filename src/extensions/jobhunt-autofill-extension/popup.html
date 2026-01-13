@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      width: 320px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    
+    h2 {
+      font-size: 20px;
+      margin-bottom: 5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .subtitle {
+      font-size: 12px;
+      opacity: 0.8;
+      margin-bottom: 20px;
+    }
+    
+    .status {
+      background: rgba(255,255,255,0.2);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 13px;
+      backdrop-filter: blur(10px);
+    }
+    
+    .status.success {
+      background: rgba(34, 197, 94, 0.3);
+    }
+    
+    .status.warning {
+      background: rgba(251, 191, 36, 0.3);
+    }
+    
+    button {
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0;
+      background: white;
+      color: #667eea;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
+    button:active {
+      transform: translateY(0);
+    }
+    
+    button.secondary {
+      background: rgba(255,255,255,0.2);
+      color: white;
+      backdrop-filter: blur(10px);
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .import-section {
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+    }
+    
+    input[type="file"] {
+      display: none;
+    }
+    
+    .file-label {
+      display: block;
+      padding: 10px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 6px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+    
+    .file-label:hover {
+      background: rgba(255,255,255,0.3);
+    }
+    
+    .emoji {
+      font-size: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h2>
+    <span class="emoji">⚡</span>
+    JobHunt AI
+  </h2>
+  <p class="subtitle">Auto-fill job applications instantly</p>
+  
+  <div id="status" class="status warning">
+    <strong>⚠️ No profile loaded</strong>
+    <p style="font-size: 11px; margin-top: 5px;">Import your profile to get started</p>
+  </div>
+  
+  <button id="fillBtn" disabled>
+    <span>🚀</span>
+    <span>Fill This Form</span>
+  </button>
+  
+  <button id="settingsBtn" class="secondary">
+    <span>⚙️</span>
+    <span>Open Settings</span>
+  </button>
+  
+  <div class="import-section">
+    <input type="file" id="fileInput" accept=".json">
+    <label for="fileInput" class="file-label">
+      📁 Import Profile JSON
+    </label>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
