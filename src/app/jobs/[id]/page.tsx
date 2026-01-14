@@ -19,7 +19,7 @@ import { db, auth } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, Building2, MapPin, Clock, ExternalLink, CheckCircle, Bookmark, Check, Loader2, Zap, Download, DollarSign, Users, Layers, Target, AlertCircle, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Building2, MapPin, Clock, ExternalLink, CheckCircle, Bookmark, Check, Loader2, Zap, Download, DollarSign, Users, Layers, Target, AlertCircle, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
 import { Alert, AlertDescription } from '@/components/ui/alert';
