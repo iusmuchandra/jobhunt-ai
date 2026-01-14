@@ -1,7 +1,7 @@
 "use client";
 
 import AnalyticsDashboard from '@/components/AnalyticsDashboard';
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   collection, 
@@ -11,7 +11,9 @@ import {
   limit, 
   getDocs, 
   getCountFromServer, 
-  documentId 
+  documentId,
+  writeBatch,
+  doc
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -68,6 +70,9 @@ export default function DashboardPage() {
   });
   
   const [loadingData, setLoadingData] = useState(true);
+  
+  // Ref to ensure we only mark as viewed once per load
+  const hasMarkedViewed = useRef(false);
 
   // UI State
   const [activeFilter, setActiveFilter] = useState('all');
@@ -82,18 +87,13 @@ export default function DashboardPage() {
 
   // --- Data Loading ---
   useEffect(() => {
-    // 1. First safety check
     if (!user) return;
-
-    // 2. CRITICAL FIX: Capture UID here as a constant string.
-    // TypeScript now knows 'userId' is a string and cannot change to null.
     const userId = user.uid;
 
     async function fetchData() {
       setLoadingData(true);
 
       try {
-        // 3. Use 'userId' (the variable) in all queries, NEVER 'user.uid'
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
           getCountFromServer(
               query(collection(db, 'user_job_matches'), where('userId', '==', userId))
@@ -116,13 +116,16 @@ export default function DashboardPage() {
             interviews: interviewsCount.data().count
         });
 
-        // 4. Use 'userId' variable here too
+        // 1. ROTATION LOGIC:
+        // Sort by 'viewed' ASC first. This puts Unseen (false) jobs at the top,
+        // and Seen (true) jobs at the bottom.
+        // Then sort by Score to get the best ones.
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
           where('userId', '==', userId),
-          orderBy('matchScore', 'desc'),
-          orderBy('notifiedAt', 'desc'),
+          orderBy('viewed', 'asc'), // Shows "New/Unseen" first
+          orderBy('matchScore', 'desc'), // Then best matches
           limit(20)
         );
 
@@ -189,19 +192,51 @@ export default function DashboardPage() {
     fetchData();
   }, [user]);
 
+  // --- 2. MARK AS VIEWED EFFECT ---
+  // This runs once when data loads. It marks the Top 5 jobs as "viewed" in the DB.
+  // Result: Next time you refresh, these 5 drop to the bottom, showing you 5 new ones.
+  useEffect(() => {
+    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current) {
+      const markTopMatchesAsViewed = async () => {
+        // Only mark jobs that are currently NOT viewed
+        const unviewedIds = jobMatches
+          .filter(m => !m.viewed)
+          .slice(0, 5) // Mark top 5
+          .map(m => m.id);
+
+        if (unviewedIds.length > 0) {
+          try {
+            const batch = writeBatch(db);
+            unviewedIds.forEach(id => {
+              const docRef = doc(db, 'user_job_matches', id);
+              batch.update(docRef, { viewed: true });
+            });
+            await batch.commit();
+            console.log("Updated daily rotation for:", unviewedIds);
+            hasMarkedViewed.current = true;
+          } catch (error) {
+            console.error("Error updating rotation:", error);
+          }
+        }
+      };
+
+      markTopMatchesAsViewed();
+    }
+  }, [loadingData, jobMatches]);
+
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
       if (activeFilter === 'new') matchesTab = !match.viewed;
 
-      const query = searchQuery.toLowerCase();
-      if (!query) return matchesTab;
+      const queryStr = searchQuery.toLowerCase();
+      if (!queryStr) return matchesTab;
       
       const matchesSearch = 
-        match.job.title.toLowerCase().includes(query) || 
-        match.job.company.toLowerCase().includes(query) ||
-        (match.matchReasons?.some?.(r => r.toLowerCase().includes(query)) ?? false);
+        match.job.title.toLowerCase().includes(queryStr) || 
+        match.job.company.toLowerCase().includes(queryStr) ||
+        (match.matchReasons?.some?.(r => r.toLowerCase().includes(queryStr)) ?? false);
 
       return matchesTab && matchesSearch;
     });
