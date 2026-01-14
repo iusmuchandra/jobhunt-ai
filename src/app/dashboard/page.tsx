@@ -169,7 +169,10 @@ export default function DashboardPage() {
           const data = doc.data();
           const job = jobsMap.get(data.jobId);
           
-          if (!job) return null;
+          if (!job) {
+            console.warn('Job not found for jobId:', data.jobId);
+            return null;
+          }
           
           return { 
             id: doc.id, 
@@ -181,6 +184,11 @@ export default function DashboardPage() {
             job 
           } as JobMatch;
         }).filter(match => match !== null);
+
+        console.log('Jobs map size:', jobsMap.size);
+        console.log('Matches after filtering:', matches.length);
+        console.log('Sample jobIds from matches:', matchesSnapshot.docs.slice(0, 3).map(d => d.data().jobId));
+        console.log('Sample jobIds from map:', Array.from(jobsMap.keys()).slice(0, 3));
 
         // SORT IN MEMORY: Unviewed first, then by score
         matches.sort((a, b) => {
