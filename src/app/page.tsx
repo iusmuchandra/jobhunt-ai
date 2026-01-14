@@ -6,6 +6,8 @@ import {
   ArrowRight, FileText, Shield, Zap, Globe, TrendingUp
 } from 'lucide-react';
 
+export const revalidate = 0;
+
 // --- REAL DATA FETCHING ---
 async function getStats() {
   try {
