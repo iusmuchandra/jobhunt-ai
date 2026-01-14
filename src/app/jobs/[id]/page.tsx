@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { 
   doc, 
@@ -25,12 +25,6 @@ import { formatDistanceToNow } from 'date-fns';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import ApplicationStatusTracker from '@/components/ApplicationStatusTracker';
-
-// Add this interface for ApplicationStatusTracker props
-interface ApplicationStatusTrackerProps {
-  applicationId: string;
-  onComplete?: (finalStatus: string) => void;
-}
 
 interface Job {
   id: string;
@@ -80,12 +74,29 @@ export default function JobDetailsPage() {
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [showApplicationStatus, setShowApplicationStatus] = useState(false);
   
-  // NEW: AI Analysis State
+  // AI Analysis State
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
-  const [aiLoading, setAiLoading] = useState(true);
+  const [aiLoading, setAiLoading] = useState(false); // Changed to false initially
   const [aiError, setAiError] = useState<string | null>(null);
+  
+  // Navigation state - track where user came from
+  const [referrer, setReferrer] = useState<string>('/dashboard');
+  
+  // Ref to prevent duplicate AI calls
+  const aiCallMadeRef = useRef(false);
 
-  // Memoized salary parsing function
+  // Store referrer on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && document.referrer) {
+      const ref = new URL(document.referrer).pathname;
+      if (ref.includes('/jobs')) {
+        setReferrer('/jobs');
+      } else if (ref.includes('/dashboard')) {
+        setReferrer('/dashboard');
+      }
+    }
+  }, []);
+
   const parseSalary = useCallback((salaryStr: string): number | null => {
     if (!salaryStr) return null;
     
@@ -111,107 +122,112 @@ export default function JobDetailsPage() {
     return null;
   }, []);
 
-  // Memoized match score calculation
+  // IMPROVED: More robust match score calculation with fallbacks
   const calculateMatchScore = useCallback((job: Job, userProfile: UserProfile): number => {
     if (!job || !userProfile) return 0;
+    
+    console.log('Calculating match score:', { 
+      userSkills: userProfile.skills?.length || 0, 
+      jobTags: job.tags?.length || 0,
+      userExp: userProfile.yearsOfExperience 
+    });
+    
+    // If no user skills, provide a basic score
+    if (!userProfile.skills || userProfile.skills.length === 0) {
+      return 50; // Base score when profile is incomplete
+    }
     
     let score = 0;
     const userSkills = userProfile.skills || [];
     const jobTags = job.tags || [];
     const jobSkills = job.skills || [];
     
-    if (userProfile.skills?.length > 0) {
-      const weights = {
-        skills: 0.40,
-        experience: 0.25,
-        location: 0.15,
-        salary: 0.10,
-        roleFit: 0.10
-      };
-      
-      // 1. Skill Match
-      const allJobKeywords = [...new Set([...jobTags, ...jobSkills])];
+    const weights = {
+      skills: 0.40,
+      experience: 0.25,
+      location: 0.15,
+      salary: 0.10,
+      roleFit: 0.10
+    };
+    
+    // 1. Skill Match
+    const allJobKeywords = [...new Set([...jobTags, ...jobSkills])];
+    if (allJobKeywords.length > 0) {
       const matchedSkills = userSkills.filter((skill: string) => 
         allJobKeywords.some(keyword => 
           keyword.toLowerCase().includes(skill.toLowerCase()) || 
           skill.toLowerCase().includes(keyword.toLowerCase())
         )
       );
-      score += (matchedSkills.length / Math.max(allJobKeywords.length, 1)) * 100 * weights.skills;
-      
-      // 2. Experience Level Match
-      const userExperience = userProfile.yearsOfExperience || 0;
-      if (job.experienceLevel) {
-        const level = job.experienceLevel.toLowerCase();
-        if (level.includes('senior') && userExperience >= 5) {
-          score += 100 * weights.experience;
-        } else if (level.includes('mid') && userExperience >= 2 && userExperience < 5) {
-          score += 75 * weights.experience;
-        } else if (level.includes('entry') && userExperience <= 2) {
-          score += 100 * weights.experience;
-        } else if (level.includes('executive') && userExperience >= 10) {
-          score += 100 * weights.experience;
-        } else if (userExperience >= 3) {
-          score += Math.min(userExperience / 10, 1) * 100 * weights.experience;
-        }
-      }
-      
-      // 3. Location Match
-      const userLocation = (userProfile.location || '').toLowerCase();
-      const jobLocation = (job.location || '').toLowerCase();
-      const isRemote = jobLocation.includes('remote') || jobLocation.includes('anywhere');
-      const isHybrid = jobLocation.includes('hybrid');
-      
-      if (isRemote) {
-        score += 100 * weights.location;
-      } else if (isHybrid) {
-        score += 50 * weights.location;
-      } else {
-        const userCity = userLocation.split(',')[0]?.trim();
-        const jobCity = jobLocation.split(',')[0]?.trim();
-        if (userCity && jobCity && (jobLocation.includes(userCity) || userLocation.includes(jobCity))) {
-          score += 100 * weights.location;
-        }
-      }
-      
-      // 4. Salary Expectation Match
-      if (job.salary && userProfile.desiredSalary) {
-        const jobSalary = parseSalary(job.salary);
-        const userSalary = parseSalary(userProfile.desiredSalary);
-        if (jobSalary && userSalary) {
-          const salaryRatio = jobSalary / userSalary;
-          if (salaryRatio >= 1) {
-            score += 100 * weights.salary;
-          } else if (salaryRatio >= 0.8) {
-            score += 80 * weights.salary;
-          } else if (salaryRatio >= 0.6) {
-            score += 50 * weights.salary;
-          }
-        }
-      }
-      
-      // 5. Role Fit
-      const titleKeywords = job.title.toLowerCase().split(/[\s\-]+/);
-      const commonRoles = ['engineer', 'developer', 'manager', 'analyst', 'designer', 'specialist'];
-      const userRoleMatch = commonRoles.some(role => 
-        userProfile.skills.some(skill => skill.toLowerCase().includes(role)) ||
-        userProfile.skills.some(skill => titleKeywords.some(keyword => keyword.includes(role)))
-      );
-      if (userRoleMatch) {
-        score += 100 * weights.roleFit;
-      }
-      
-      return Math.min(Math.round(score), 100);
-    } else {
-      const matchedSkills = userSkills.filter((skill: string) => 
-        jobTags.some(tag => tag.toLowerCase().includes(skill.toLowerCase()) || 
-                             skill.toLowerCase().includes(tag.toLowerCase()))
-      );
-      return Math.min(Math.round((matchedSkills.length / Math.max(jobTags.length, 1)) * 100), 100);
+      score += (matchedSkills.length / allJobKeywords.length) * 100 * weights.skills;
+      console.log('Skill match:', matchedSkills.length, '/', allJobKeywords.length);
     }
+    
+    // 2. Experience Level Match
+    const userExperience = userProfile.yearsOfExperience || 0;
+    if (job.experienceLevel) {
+      const level = job.experienceLevel.toLowerCase();
+      if (level.includes('senior') && userExperience >= 5) {
+        score += 100 * weights.experience;
+      } else if (level.includes('mid') && userExperience >= 2 && userExperience < 5) {
+        score += 75 * weights.experience;
+      } else if (level.includes('entry') && userExperience <= 2) {
+        score += 100 * weights.experience;
+      } else if (userExperience >= 3) {
+        score += Math.min(userExperience / 10, 1) * 100 * weights.experience;
+      }
+    }
+    
+    // 3. Location Match
+    const userLocation = (userProfile.location || '').toLowerCase();
+    const jobLocation = (job.location || '').toLowerCase();
+    const isRemote = jobLocation.includes('remote') || jobLocation.includes('anywhere');
+    const isHybrid = jobLocation.includes('hybrid');
+    
+    if (isRemote) {
+      score += 100 * weights.location;
+    } else if (isHybrid) {
+      score += 50 * weights.location;
+    } else if (userLocation) {
+      const userCity = userLocation.split(',')[0]?.trim();
+      const jobCity = jobLocation.split(',')[0]?.trim();
+      if (userCity && jobCity && (jobLocation.includes(userCity) || userLocation.includes(jobCity))) {
+        score += 100 * weights.location;
+      }
+    }
+    
+    // 4. Salary Match
+    if (job.salary && userProfile.desiredSalary) {
+      const jobSalary = parseSalary(job.salary);
+      const userSalary = parseSalary(userProfile.desiredSalary);
+      if (jobSalary && userSalary) {
+        const salaryRatio = jobSalary / userSalary;
+        if (salaryRatio >= 1) {
+          score += 100 * weights.salary;
+        } else if (salaryRatio >= 0.8) {
+          score += 80 * weights.salary;
+        } else if (salaryRatio >= 0.6) {
+          score += 50 * weights.salary;
+        }
+      }
+    }
+    
+    // 5. Role Fit
+    const titleKeywords = job.title.toLowerCase().split(/[\s\-]+/);
+    const commonRoles = ['engineer', 'developer', 'manager', 'analyst', 'designer', 'specialist'];
+    const userRoleMatch = commonRoles.some(role => 
+      userSkills.some(skill => skill.toLowerCase().includes(role)) ||
+      titleKeywords.some(keyword => keyword.includes(role))
+    );
+    if (userRoleMatch) {
+      score += 100 * weights.roleFit;
+    }
+    
+    const finalScore = Math.min(Math.round(score), 100);
+    console.log('Final calculated score:', finalScore);
+    return finalScore;
   }, [parseSalary]);
 
-  // Helper function to track applications
   const handleApplyAndTrack = async (applicationData: {
     jobId: string;
     jobTitle: string;
@@ -239,14 +255,12 @@ export default function JobDetailsPage() {
         aiAnalysis: aiAnalysis
       });
 
-      // Update user stats
       const userRef = doc(db, 'users', user.uid);
       await updateDoc(userRef, {
         'stats.applications': increment(1),
         'stats.lastAppliedAt': serverTimestamp()
       });
 
-      console.log('Application tracked successfully');
       return docRef.id;
     } catch (error) {
       console.error('Error tracking application:', error);
@@ -254,17 +268,16 @@ export default function JobDetailsPage() {
     }
   };
 
-  // OPTIMIZED: Unified Data Loading + View Tracking
+  // OPTIMIZED: Load job and profile data FIRST, AI analysis in background
   useEffect(() => {
     if (!id || !auth.currentUser) return;
     
     let isMounted = true;
-    let aiAbortController: AbortController | null = null;
     
-    async function loadAll() {
+    async function loadJobAndProfile() {
       setLoading(true);
       try {
-        // Load job and profile in parallel
+        // Parallel load of job and profile
         const [jobSnapshot, userSnapshot] = await Promise.all([
           getDoc(doc(db, 'jobs', id as string)),
           getDoc(doc(db, 'users', auth.currentUser!.uid))
@@ -276,100 +289,75 @@ export default function JobDetailsPage() {
           const jobData = { id: jobSnapshot.id, ...jobSnapshot.data() } as Job;
           setJob(jobData);
           
+          let calculatedScore = 0;
+          
           if (userSnapshot.exists()) {
             const userData = { uid: userSnapshot.id, ...userSnapshot.data() } as UserProfile;
             setUserProfile(userData);
             
-            // Calculate score ONCE
-            const score = calculateMatchScore(jobData, userData);
-            setMatchScore(score);
+            // Calculate score immediately for instant display
+            calculatedScore = calculateMatchScore(jobData, userData);
+            setMatchScore(calculatedScore);
+            console.log('Set initial match score:', calculatedScore);
             
-            // --- ENHANCED: Fetch AI Analysis via API Route with Error Handling ---
-            setAiLoading(true);
-            setAiError(null);
-            aiAbortController = new AbortController();
-            
-            try {
-              const response = await fetch('/api/analyze-job', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userProfile: userData, job: jobData }),
-                signal: aiAbortController.signal
-              });
-              
-              if (!isMounted) return;
-              
-              if (!response.ok) {
-                throw new Error(`API returned ${response.status}`);
+            // Provide basic match details immediately
+            const basicReasons = [];
+            if (calculatedScore >= 70) {
+              basicReasons.push(`Strong ${calculatedScore}% match based on your profile`);
+              if (userData.skills?.length > 0) {
+                basicReasons.push(`Your skills align with ${jobData.tags?.length || 0} required technologies`);
               }
-              
-              const data = await response.json();
-              
-              if (data.matchResult) {
-                setMatchDetails({
-                  reasons: data.matchResult.reasons || [],
-                  weaknesses: data.matchResult.weaknesses || [],
-                  suggestions: data.matchResult.suggestions || []
-                });
-              }
-              
-              if (data.analysis) {
-                setAiAnalysis(data.analysis);
-              }
-              
-              setAiLoading(false);
-              
-            } catch (err: any) {
-              if (err.name === 'AbortError') return; // Ignore aborts
-              
-              if (!isMounted) return;
-              
-              console.error('AI API error:', err);
-              setAiError('AI analysis temporarily unavailable');
-              setAiLoading(false);
-              
-              // Fallback to basic analysis
-              setMatchDetails({
-                reasons: [`${score}% match based on skills and experience`],
-                weaknesses: ['Enable AI analysis for detailed insights'],
-                suggestions: ['Contact support if this persists']
-              });
+            } else if (calculatedScore >= 50) {
+              basicReasons.push(`Good ${calculatedScore}% match - some skills align`);
+            } else {
+              basicReasons.push(`${calculatedScore}% match - consider developing relevant skills`);
             }
+            
+            setMatchDetails({
+              reasons: basicReasons,
+              weaknesses: ['AI analysis loading...'],
+              suggestions: ['Detailed suggestions coming soon...']
+            });
           }
 
-          // Mark as Viewed
+          // Mark as viewed (non-blocking)
           const markAsViewed = async () => {
-             try {
-               const matchQuery = query(
-                 collection(db, 'user_job_matches'), 
-                 where('userId', '==', auth.currentUser!.uid), 
-                 where('jobId', '==', id), 
-                 limit(1)
-               );
-               const snapshot = await getDocs(matchQuery);
-               if (!snapshot.empty) {
-                 const matchDoc = snapshot.docs[0];
-                 await updateDoc(matchDoc.ref, { 
-                   viewed: true, 
-                   viewedAt: serverTimestamp() 
-                 });
-               }
-             } catch (viewError) {
-               console.error("Error marking as viewed:", viewError);
-             }
+            try {
+              const matchQuery = query(
+                collection(db, 'user_job_matches'), 
+                where('userId', '==', auth.currentUser!.uid), 
+                where('jobId', '==', id), 
+                limit(1)
+              );
+              const snapshot = await getDocs(matchQuery);
+              if (!snapshot.empty) {
+                await updateDoc(snapshot.docs[0].ref, { 
+                  viewed: true, 
+                  viewedAt: serverTimestamp() 
+                });
+              }
+            } catch (err) {
+              console.error("Error marking as viewed:", err);
+            }
           };
           markAsViewed();
+          
+          // Check if saved (non-blocking)
+          const checkSaved = async () => {
+            try {
+              const savedQuery = query(
+                collection(db, 'saved_jobs'),
+                where('userId', '==', auth.currentUser!.uid),
+                where('jobId', '==', id)
+              );
+              const savedSnapshot = await getDocs(savedQuery);
+              if (isMounted) setIsSaved(!savedSnapshot.empty);
+            } catch (err) {
+              console.error("Error checking saved status:", err);
+            }
+          };
+          checkSaved();
         }
-        
-        // Check if saved
-        const savedQuery = query(
-          collection(db, 'saved_jobs'),
-          where('userId', '==', auth.currentUser!.uid),
-          where('jobId', '==', id)
-        );
-        getDocs(savedQuery).then(savedSnapshot => {
-          if (isMounted) setIsSaved(!savedSnapshot.empty);
-        }).catch(console.error);
         
       } catch (error) {
         console.error("Error loading data:", error);
@@ -378,16 +366,83 @@ export default function JobDetailsPage() {
       }
     }
     
-    loadAll();
+    loadJobAndProfile();
     
-    // Cleanup function
     return () => {
       isMounted = false;
-      if (aiAbortController) {
-        aiAbortController.abort();
-      }
     };
-  }, [id, calculateMatchScore]); 
+  }, [id, calculateMatchScore]);
+
+  // SEPARATE EFFECT: Load AI analysis in background (non-blocking)
+  useEffect(() => {
+    if (!job || !userProfile || aiCallMadeRef.current) return;
+    
+    let isMounted = true;
+    const aiController = new AbortController();
+    
+    async function loadAIAnalysis() {
+      aiCallMadeRef.current = true;
+      setAiLoading(true);
+      setAiError(null);
+      
+      try {
+        const response = await fetch('/api/analyze-job', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userProfile, job }),
+          signal: aiController.signal
+        });
+        
+        if (!isMounted) return;
+        
+        if (!response.ok) {
+          throw new Error(`API returned ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.matchResult) {
+          setMatchDetails({
+            reasons: data.matchResult.reasons || [],
+            weaknesses: data.matchResult.weaknesses || [],
+            suggestions: data.matchResult.suggestions || []
+          });
+          
+          // Update score if AI provides a better one
+          if (data.matchResult.score && data.matchResult.score !== matchScore) {
+            console.log('Updating score from AI:', data.matchResult.score);
+            setMatchScore(data.matchResult.score);
+          }
+        }
+        
+        if (data.analysis) {
+          setAiAnalysis(data.analysis);
+        }
+        
+      } catch (err: any) {
+        if (err.name === 'AbortError') return;
+        
+        if (!isMounted) return;
+        
+        console.error('AI API error:', err);
+        setAiError('AI analysis unavailable');
+        
+        // Keep the basic analysis we set earlier
+        
+      } finally {
+        if (isMounted) setAiLoading(false);
+      }
+    }
+    
+    // Small delay to let page render first
+    const timer = setTimeout(loadAIAnalysis, 300);
+    
+    return () => {
+      clearTimeout(timer);
+      isMounted = false;
+      aiController.abort();
+    };
+  }, [job, userProfile, matchScore]);
 
   const handleTrackApplication = async () => {
     if (!auth.currentUser || !job) return;
@@ -395,7 +450,7 @@ export default function JobDetailsPage() {
     setApplying(true);
     
     try {
-      const applicationId = await handleApplyAndTrack({
+      await handleApplyAndTrack({
         jobId: job.id,
         jobTitle: job.title,
         company: job.company,
@@ -518,10 +573,20 @@ export default function JobDetailsPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 py-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-6xl mx-auto">
-        <Link href="/dashboard" className="inline-flex items-center text-slate-600 hover:text-slate-900 mb-8 group">
-          <ArrowLeft className="w-4 h-4 mr-2 group-hover:-translate-x-1 transition-transform" />
-          Back to Dashboard
-        </Link>
+        {/* IMPROVED: Dual Navigation */}
+        <div className="flex items-center justify-between mb-8">
+          <Link href={referrer} className="inline-flex items-center text-slate-600 hover:text-slate-900 group">
+            <ArrowLeft className="w-4 h-4 mr-2 group-hover:-translate-x-1 transition-transform" />
+            Back to {referrer === '/jobs' ? 'Jobs' : 'Dashboard'}
+          </Link>
+          
+          {referrer !== '/dashboard' && (
+            <Link href="/dashboard" className="inline-flex items-center text-blue-600 hover:text-blue-800 text-sm font-medium">
+              Dashboard
+              <ArrowRight className="w-4 h-4 ml-1" />
+            </Link>
+          )}
+        </div>
 
         <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden mb-8">
           <div className="p-8 border-b border-slate-100">
@@ -557,7 +622,7 @@ export default function JobDetailsPage() {
                     </div>
                   </div>
                   
-                  {/* Match Score Card */}
+                  {/* Match Score Card - Shows immediately */}
                   <div className="bg-gradient-to-r from-blue-50 to-purple-50 px-6 py-4 rounded-xl border border-blue-100 min-w-[180px]">
                     <div className="flex items-center gap-3 mb-2">
                       <Target className="w-5 h-5 text-blue-600" />
@@ -623,17 +688,17 @@ export default function JobDetailsPage() {
                 </div>
               </div>
 
-              {/* AI Analysis Section - ENHANCED with Error Handling */}
+              {/* AI Analysis Section - Loads in background */}
               {aiLoading ? (
                 <div className="bg-blue-50 border border-blue-100 rounded-xl p-6 flex items-center justify-center gap-3">
                   <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
-                  <span className="text-blue-700 font-medium">Analyzing job match...</span>
+                  <span className="text-blue-700 font-medium">Loading AI analysis...</span>
                 </div>
               ) : aiError ? (
                 <Alert className="bg-amber-50 border-amber-200">
                   <AlertCircle className="w-5 h-5" />
                   <AlertDescription className="text-amber-800">
-                    <strong>{aiError}</strong>. Using basic match analysis instead.
+                    <strong>{aiError}</strong>. Basic match analysis is shown instead.
                   </AlertDescription>
                 </Alert>
               ) : aiAnalysis && (
@@ -829,7 +894,7 @@ export default function JobDetailsPage() {
                 )}
                 
                 {/* Weaknesses */}
-                {matchDetails.weaknesses.length > 0 && (
+                {matchDetails.weaknesses.length > 0 && !matchDetails.weaknesses[0].includes('loading') && (
                   <div>
                     <h5 className="text-sm font-medium text-amber-700 mb-2">Areas to Improve</h5>
                     <ul className="space-y-2">
