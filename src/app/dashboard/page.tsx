@@ -1,7 +1,7 @@
 "use client";
 
 import AnalyticsDashboard from '@/components/AnalyticsDashboard';
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   collection, 
@@ -11,7 +11,9 @@ import {
   limit, 
   getDocs, 
   getCountFromServer, 
-  documentId 
+  documentId,
+  writeBatch,
+  doc
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -68,6 +70,9 @@ export default function DashboardPage() {
   });
   
   const [loadingData, setLoadingData] = useState(true);
+  
+  // Ref to ensure we only mark as viewed once per load
+  const hasMarkedViewed = useRef(false);
 
   // UI State
   const [activeFilter, setActiveFilter] = useState('all');
@@ -82,18 +87,16 @@ export default function DashboardPage() {
 
   // --- Data Loading ---
   useEffect(() => {
-    // 1. First safety check
     if (!user) return;
-
-    // 2. CRITICAL FIX: Capture UID here as a constant string.
-    // TypeScript now knows 'userId' is a string and cannot change to null.
     const userId = user.uid;
 
     async function fetchData() {
       setLoadingData(true);
+      // Reset the ref when fetching new data
+      hasMarkedViewed.current = false;
 
       try {
-        // 3. Use 'userId' (the variable) in all queries, NEVER 'user.uid'
+        // Get counts
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
           getCountFromServer(
               query(collection(db, 'user_job_matches'), where('userId', '==', userId))
@@ -116,7 +119,7 @@ export default function DashboardPage() {
             interviews: interviewsCount.data().count
         });
 
-        // 4. Use 'userId' variable here too
+        // Use the same query structure as Document 1 (which works)
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
@@ -172,7 +175,11 @@ export default function DashboardPage() {
           
           return { 
             id: doc.id, 
-            ...data, 
+            jobId: data.jobId,
+            matchScore: data.matchScore || 0,
+            matchReasons: data.matchReasons || [],
+            notifiedAt: data.notifiedAt,
+            viewed: data.viewed || false,
             job 
           } as JobMatch;
         }).filter(match => match !== null);
@@ -189,19 +196,62 @@ export default function DashboardPage() {
     fetchData();
   }, [user]);
 
+  // --- Mark Top 5 as Viewed (runs AFTER data loads) ---
+  useEffect(() => {
+    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && user) {
+      const markTopMatchesAsViewed = async () => {
+        // Get top 5 unviewed matches
+        const unviewedMatches = jobMatches
+          .filter(m => !m.viewed)
+          .slice(0, 5);
+
+        if (unviewedMatches.length > 0) {
+          try {
+            const batch = writeBatch(db);
+            unviewedMatches.forEach(match => {
+              const docRef = doc(db, 'user_job_matches', match.id);
+              batch.update(docRef, { viewed: true });
+            });
+            await batch.commit();
+            
+            // Update local state to reflect the change
+            setJobMatches(prevMatches => 
+              prevMatches.map(match => {
+                if (unviewedMatches.find(um => um.id === match.id)) {
+                  return { ...match, viewed: true };
+                }
+                return match;
+              })
+            );
+            
+            hasMarkedViewed.current = true;
+          } catch (error) {
+            console.error("Error updating viewed status:", error);
+          }
+        } else {
+          hasMarkedViewed.current = true;
+        }
+      };
+
+      // Add a small delay to ensure UI renders first
+      const timer = setTimeout(markTopMatchesAsViewed, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [loadingData, jobMatches, user]);
+
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
       if (activeFilter === 'new') matchesTab = !match.viewed;
 
-      const query = searchQuery.toLowerCase();
-      if (!query) return matchesTab;
+      const queryStr = searchQuery.toLowerCase();
+      if (!queryStr) return matchesTab;
       
       const matchesSearch = 
-        match.job.title.toLowerCase().includes(query) || 
-        match.job.company.toLowerCase().includes(query) ||
-        (match.matchReasons?.some?.(r => r.toLowerCase().includes(query)) ?? false);
+        match.job.title.toLowerCase().includes(queryStr) || 
+        match.job.company.toLowerCase().includes(queryStr) ||
+        (match.matchReasons?.some?.(r => r.toLowerCase().includes(queryStr)) ?? false);
 
       return matchesTab && matchesSearch;
     });
@@ -212,6 +262,32 @@ export default function DashboardPage() {
     if (score >= 85) return 'A';
     if (score >= 75) return 'B';
     return 'C';
+  };
+
+  const getTierColor = (tier: string) => {
+    switch(tier) {
+      case 'S': return 'bg-yellow-500/20 text-yellow-400';
+      case 'A': return 'bg-green-500/20 text-green-400';
+      case 'B': return 'bg-blue-500/20 text-blue-400';
+      default: return 'bg-gray-500/20 text-gray-400';
+    }
+  };
+
+  // Helper function to safely format dates
+  const formatJobDate = (postedAt: any) => {
+    if (!postedAt) return 'Recently';
+    
+    try {
+      if (postedAt.toDate) {
+        return formatDistanceToNow(postedAt.toDate(), { addSuffix: true });
+      } else if (postedAt.seconds) {
+        return formatDistanceToNow(new Date(postedAt.seconds * 1000), { addSuffix: true });
+      }
+    } catch (error) {
+      console.error('Error formatting date:', error);
+    }
+    
+    return 'Recently';
   };
 
   // --- Render ---
@@ -340,7 +416,7 @@ export default function DashboardPage() {
                     activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
                   }`}
                 >
-                  {filter.charAt(0).toUpperCase() + filter.slice(1)}
+                  {filter === 'all' ? 'All' : 'New'}
                 </button>
               ))}
             </div>
@@ -351,7 +427,6 @@ export default function DashboardPage() {
               [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
             ) : filteredMatches.length > 0 ? (
               <>
-                {/* SLICE TO SHOW ONLY TOP 5 AFTER FILTERING */}
                 {filteredMatches.slice(0, 5).map(match => (
                   <Link key={match.id} href={`/jobs/${match.jobId}`} className="block mb-4">
                     <div className="group relative cursor-pointer">
@@ -367,13 +442,22 @@ export default function DashboardPage() {
                               <div className="flex-1">
                                 <div className="flex flex-wrap items-center gap-2 mb-1">
                                   <h3 className="text-lg md:text-xl font-bold">{match.job.title}</h3>
-                                  <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${getTier(match.matchScore) === 'S' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-blue-500/20 text-blue-400'}`}>Tier {getTier(match.matchScore)}</span>
-                                  {!match.viewed && (<span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-500/20 text-blue-400 flex items-center gap-1"><Sparkles className="w-3 h-3" />New Match</span>)}
+                                  <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${getTierColor(getTier(match.matchScore))}`}>
+                                    Tier {getTier(match.matchScore)}
+                                  </span>
+                                  {!match.viewed && (
+                                    <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-500/20 text-blue-400 flex items-center gap-1">
+                                      <Sparkles className="w-3 h-3" />New Match
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm text-gray-400">
                                   <span className="font-medium text-white">{match.job.company}</span>
                                   <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{match.job.location}</span>
-                                  <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{match.job.postedAt ? formatDistanceToNow(match.job.postedAt.toDate(), { addSuffix: true }) : 'Recently'}</span>
+                                  <span className="flex items-center gap-1">
+                                    <Calendar className="w-3 h-3" />
+                                    {formatJobDate(match.job.postedAt)}
+                                  </span>
                                   {match.job.salary && <span className="font-semibold text-green-400">{match.job.salary}</span>}
                                 </div>
                               </div>
@@ -387,7 +471,7 @@ export default function DashboardPage() {
                           
                           <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
                             <div className="text-left md:text-right">
-                              <div className="text-3xl font-black bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{match.matchScore}</div>
+                              <div className="text-3xl font-black bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{match.matchScore}%</div>
                               <div className="text-xs text-gray-500 font-medium">MATCH</div>
                             </div>
                             <button className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl font-semibold hover:scale-105 transition-transform duration-300 flex items-center gap-2">
@@ -415,7 +499,12 @@ export default function DashboardPage() {
             ) : (
               <div className="text-center py-12 text-gray-500 bg-gray-900/30 rounded-3xl border border-gray-800">
                 <Target className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-                <p>No matches found.</p>
+                <p className="text-lg font-medium mb-2">
+                  {activeFilter === 'new' ? 'No new matches' : 'No matches found'}
+                </p>
+                <p className="text-sm text-gray-600">
+                  {stats.jobsFound > 0 ? 'Try changing filters or check the Jobs page' : 'Your AI agent is scanning for opportunities'}
+                </p>
               </div>
             )}
           </div>
