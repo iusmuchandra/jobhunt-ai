@@ -27,7 +27,8 @@ import {
   Calendar, 
   Zap, 
   Loader2,
-  ArrowRight
+  ArrowRight,
+  AlertCircle
 } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow } from 'date-fns';
@@ -70,9 +71,12 @@ export default function DashboardPage() {
   });
   
   const [loadingData, setLoadingData] = useState(true);
+  const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
+  const [isNewUser, setIsNewUser] = useState(false);
   
   // Ref to ensure we only mark as viewed once per load
   const hasMarkedViewed = useRef(false);
+  const hasTriggeredScraper = useRef(false);
 
   // UI State
   const [activeFilter, setActiveFilter] = useState('all');
@@ -92,7 +96,6 @@ export default function DashboardPage() {
 
     async function fetchData() {
       setLoadingData(true);
-      // Reset the ref when fetching new data
       hasMarkedViewed.current = false;
 
       try {
@@ -113,13 +116,30 @@ export default function DashboardPage() {
           )
         ]);
 
+        const matchCount = matchesCount.data().count;
+
         setStats({
-            jobsFound: matchesCount.data().count,
+            jobsFound: matchCount,
             jobsApplied: appsCount.data().count,
             interviews: interviewsCount.data().count
         });
 
-        // Use the same query structure as Document 1 (which works)
+        // Check if new user (no matches)
+        if (matchCount === 0) {
+          setIsNewUser(true);
+          
+          // Trigger scraper once for new users
+          if (!hasTriggeredScraper.current) {
+            hasTriggeredScraper.current = true;
+            triggerScraperForNewUser(user.email);
+          }
+          
+          // Fetch global jobs as fallback
+          await fetchGlobalJobs();
+          return;
+        }
+
+        // Fetch user-specific matches
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
@@ -132,8 +152,7 @@ export default function DashboardPage() {
         const matchesSnapshot = await getDocs(q);
         
         if (matchesSnapshot.empty) {
-          setJobMatches([]);
-          setLoadingData(false);
+          await fetchGlobalJobs();
           return;
         }
 
@@ -143,8 +162,7 @@ export default function DashboardPage() {
           .filter(Boolean);
 
         if (jobIds.length === 0) {
-          setJobMatches([]);
-          setLoadingData(false);
+          await fetchGlobalJobs();
           return;
         }
 
@@ -185,6 +203,7 @@ export default function DashboardPage() {
         }).filter(match => match !== null);
 
         setJobMatches(matches);
+        setShowingGlobalJobs(false);
 
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
@@ -193,14 +212,112 @@ export default function DashboardPage() {
       }
     }
 
+    async function fetchGlobalJobs() {
+      try {
+        console.log('📊 No user matches found, showing global jobs');
+        setShowingGlobalJobs(true);
+        
+        const jobsRef = collection(db, 'jobs');
+        const globalQuery = query(
+          jobsRef,
+          orderBy('postedAt', 'desc'),
+          limit(20)
+        );
+        
+        const globalJobsSnapshot = await getDocs(globalQuery);
+        
+        const globalJobs = globalJobsSnapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            jobId: doc.id,
+            matchScore: 75,
+            matchReasons: ['Recently posted', 'Top company'],
+            notifiedAt: data.postedAt,
+            viewed: false,
+            job: {
+              title: data.title,
+              company: data.company,
+              location: data.location,
+              url: data.url,
+              postedAt: data.postedAt,
+              salary: data.salary
+            }
+          } as JobMatch;
+        });
+        
+        setJobMatches(globalJobs);
+      } catch (error) {
+        console.error('Error fetching global jobs:', error);
+      }
+    }
+
+    async function triggerScraperForNewUser(email: string | null) {
+      try {
+        console.log('🎯 Triggering scraper for new user:', email);
+        const response = await fetch('/api/trigger-scraper', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userEmail: email })
+        });
+        
+        if (response.ok) {
+          console.log('✅ Scraper triggered successfully');
+        } else {
+          console.error('❌ Failed to trigger scraper:', await response.text());
+        }
+      } catch (error) {
+        console.error('❌ Error triggering scraper:', error);
+      }
+    }
+
     fetchData();
   }, [user]);
 
-  // --- Mark Top 5 as Viewed (runs AFTER data loads) ---
+  // --- Poll for personalized matches (for new users) ---
   useEffect(() => {
-    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && user) {
+    if (!showingGlobalJobs || !isNewUser || !user) return;
+    
+    const pollInterval = setInterval(async () => {
+      try {
+        const matchesRef = collection(db, 'user_job_matches');
+        const q = query(
+          matchesRef,
+          where('userId', '==', user.uid),
+          limit(1)
+        );
+        
+        const snapshot = await getDocs(q);
+        
+        if (!snapshot.empty) {
+          console.log('✨ Personalized matches are ready!');
+          setShowingGlobalJobs(false);
+          setIsNewUser(false);
+          // Trigger full data refresh
+          window.location.reload();
+          clearInterval(pollInterval);
+        }
+      } catch (error) {
+        console.error('Error polling for matches:', error);
+      }
+    }, 15000); // Poll every 15 seconds
+    
+    // Stop polling after 5 minutes
+    const timeout = setTimeout(() => {
+      clearInterval(pollInterval);
+      console.log('⏱️ Stopped polling for personalized matches');
+    }, 300000);
+    
+    return () => {
+      clearInterval(pollInterval);
+      clearTimeout(timeout);
+    };
+  }, [showingGlobalJobs, isNewUser, user]);
+
+  // --- Mark as viewed effect ---
+  useEffect(() => {
+    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && !showingGlobalJobs) {
       const markTopMatchesAsViewed = async () => {
-        // Get top 5 unviewed matches
         const unviewedMatches = jobMatches
           .filter(m => !m.viewed)
           .slice(0, 5);
@@ -214,7 +331,6 @@ export default function DashboardPage() {
             });
             await batch.commit();
             
-            // Update local state to reflect the change
             setJobMatches(prevMatches => 
               prevMatches.map(match => {
                 if (unviewedMatches.find(um => um.id === match.id)) {
@@ -233,11 +349,10 @@ export default function DashboardPage() {
         }
       };
 
-      // Add a small delay to ensure UI renders first
       const timer = setTimeout(markTopMatchesAsViewed, 500);
       return () => clearTimeout(timer);
     }
-  }, [loadingData, jobMatches, user]);
+  }, [loadingData, jobMatches, showingGlobalJobs]);
 
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
@@ -273,7 +388,6 @@ export default function DashboardPage() {
     }
   };
 
-  // Helper function to safely format dates
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
     
@@ -336,6 +450,33 @@ export default function DashboardPage() {
           </Link>
         </div>
 
+        {/* New User Notice */}
+        {showingGlobalJobs && isNewUser && (
+          <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-2xl p-6">
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-blue-500/20 rounded-xl">
+                <Sparkles className="w-6 h-6 text-blue-400" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
+                  🎯 Personalizing your job feed...
+                  <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
+                </h3>
+                <p className="text-gray-300 mb-2">
+                  Our AI is scanning <span className="font-bold text-white">2,400+ jobs</span> across top tech companies to find your perfect matches.
+                </p>
+                <p className="text-gray-400 text-sm">
+                  This usually takes 1-2 minutes. Meanwhile, here are some trending opportunities from companies like OpenAI, Stripe, and Airbnb!
+                </p>
+                <div className="mt-4 flex items-center gap-2 text-sm text-blue-400">
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
+                  <span>Checking for personalized matches...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <Link href="/jobs" className="block h-full">
@@ -353,7 +494,9 @@ export default function DashboardPage() {
                     {stats.jobsFound.toLocaleString()}
                   </div>
                   <div className="flex items-center gap-2 text-sm">
-                    <div className="px-2 py-1 bg-green-500/20 text-green-400 rounded-lg font-medium">Active Now</div>
+                    <div className="px-2 py-1 bg-green-500/20 text-green-400 rounded-lg font-medium">
+                      {showingGlobalJobs ? 'Scanning...' : 'Active Now'}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -405,21 +548,25 @@ export default function DashboardPage() {
         {/* Matches List */}
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold">Top Picks for You</h2>
+            <h2 className="text-2xl font-bold">
+              {showingGlobalJobs ? 'Top Opportunities' : 'Top Picks for You'}
+            </h2>
             {/* Filter Tabs */}
-            <div className="flex items-center gap-2 bg-gray-900/50 p-1 rounded-xl border border-gray-800">
-              {['all', 'new'].map(filter => (
-                <button
-                  key={filter}
-                  onClick={() => setActiveFilter(filter)}
-                  className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
-                    activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {filter === 'all' ? 'All' : 'New'}
-                </button>
-              ))}
-            </div>
+            {!showingGlobalJobs && (
+              <div className="flex items-center gap-2 bg-gray-900/50 p-1 rounded-xl border border-gray-800">
+                {['all', 'new'].map(filter => (
+                  <button
+                    key={filter}
+                    onClick={() => setActiveFilter(filter)}
+                    className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                      activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {filter === 'all' ? 'All' : 'New'}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="space-y-4">
@@ -441,76 +588,112 @@ export default function DashboardPage() {
                               </div>
                               <div className="flex-1">
                                 <div className="flex flex-wrap items-center gap-2 mb-1">
-                                  <h3 className="text-lg md:text-xl font-bold">{match.job.title}</h3>
-                                  <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${getTierColor(getTier(match.matchScore))}`}>
-                                    Tier {getTier(match.matchScore)}
-                                  </span>
-                                  {!match.viewed && (
-                                    <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-500/20 text-blue-400 flex items-center gap-1">
-                                      <Sparkles className="w-3 h-3" />New Match
+                                  <h3 className="text-lg md:text-xl font-bold text-white group-hover:text-blue-400 transition-colors">
+                                    {match.job.title}
+                                  </h3>
+                                  {!match.viewed && !showingGlobalJobs && (
+                                    <span className="px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-bold uppercase tracking-wider animate-pulse">
+                                      New
                                     </span>
                                   )}
                                 </div>
-                                <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm text-gray-400">
-                                  <span className="font-medium text-white">{match.job.company}</span>
-                                  <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{match.job.location}</span>
-                                  <span className="flex items-center gap-1">
-                                    <Calendar className="w-3 h-3" />
+                                <div className="text-gray-400 text-sm font-medium mb-3">
+                                  {match.job.company}
+                                </div>
+                                
+                                <div className="flex flex-wrap items-center gap-y-2 gap-x-4 text-xs text-gray-500 mb-4">
+                                  <div className="flex items-center gap-1.5">
+                                    <MapPin className="w-3.5 h-3.5" />
+                                    {match.job.location}
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <Calendar className="w-3.5 h-3.5" />
                                     {formatJobDate(match.job.postedAt)}
-                                  </span>
-                                  {match.job.salary && <span className="font-semibold text-green-400">{match.job.salary}</span>}
+                                  </div>
+                                  {match.job.salary && (
+                                    <div className="flex items-center gap-1.5 text-green-400/80">
+                                      <Zap className="w-3.5 h-3.5" />
+                                      {match.job.salary}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Match Reasons Badges */}
+                                <div className="flex flex-wrap gap-2">
+                                  {match.matchReasons?.slice(0, 3).map((reason, idx) => (
+                                    <span 
+                                      key={idx} 
+                                      className="px-2 py-1 rounded-md bg-gray-800/50 border border-gray-700/50 text-gray-400 text-xs"
+                                    >
+                                      {reason}
+                                    </span>
+                                  ))}
+                                  {(match.matchReasons?.length || 0) > 3 && (
+                                    <span className="px-2 py-1 rounded-md bg-gray-800/50 text-gray-500 text-xs">
+                                      +{match.matchReasons.length - 3} more
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2 ml-0 md:ml-[60px]">
-                              {match.matchReasons?.slice(0, 3).map((tag, idx) => (
-                                <span key={idx} className="px-3 py-1 bg-gray-800 rounded-lg text-xs text-gray-300">{tag}</span>
-                              ))}
+
+                            {/* Right Side: Score & Action */}
+                            <div className="flex md:flex-col items-center md:items-end justify-between gap-4 pl-0 md:pl-6 md:border-l border-gray-800 min-w-[100px]">
+                              <div className="flex flex-col items-center md:items-end">
+                                <div className={`flex items-center justify-center w-12 h-12 rounded-full border-2 text-sm font-bold shadow-[0_0_15px_rgba(0,0,0,0.3)] ${
+                                  getTier(match.matchScore) === 'S' ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10 shadow-yellow-500/20' :
+                                  getTier(match.matchScore) === 'A' ? 'border-green-500 text-green-400 bg-green-500/10 shadow-green-500/20' :
+                                  'border-blue-500 text-blue-400 bg-blue-500/10 shadow-blue-500/20'
+                                }`}>
+                                  {match.matchScore}%
+                                </div>
+                                <span className={`text-[10px] font-bold mt-1 ${
+                                   getTier(match.matchScore) === 'S' ? 'text-yellow-500' : 'text-gray-500'
+                                }`}>
+                                  MATCH
+                                </span>
+                              </div>
+
+                              <button className="hidden md:flex items-center gap-2 text-sm font-medium text-blue-400 group-hover:text-blue-300 transition-colors">
+                                View Job <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                              </button>
                             </div>
-                          </div>
-                          
-                          <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
-                            <div className="text-left md:text-right">
-                              <div className="text-3xl font-black bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{match.matchScore}%</div>
-                              <div className="text-xs text-gray-500 font-medium">MATCH</div>
-                            </div>
-                            <button className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl font-semibold hover:scale-105 transition-transform duration-300 flex items-center gap-2">
-                              <Zap className="w-4 h-4" /> Apply
-                            </button>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  </Link>
-                ))}
-
-                {/* VIEW ALL MATCHES BUTTON */}
-                <div className="flex justify-center pt-6 pb-8">
-                  <Link href="/jobs">
-                    <button className="flex items-center gap-2 px-8 py-4 bg-gray-900 hover:bg-gray-800 border border-gray-800 hover:border-gray-700 rounded-2xl transition-all group shadow-lg shadow-blue-900/10">
-                      <span className="font-bold text-gray-300 group-hover:text-white text-lg">
-                        View All {stats.jobsFound.toLocaleString()} Matches
-                      </span>
-                      <ArrowRight className="w-5 h-5 text-blue-500 group-hover:translate-x-1 transition-transform" />
-                    </button>
-                  </Link>
+                    </Link>
+                  ))}
+                  
+                  <div className="flex justify-center mt-8">
+                     <Link href="/jobs">
+                        <button className="px-6 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-sm font-medium transition-colors border border-gray-700">
+                           View All {stats.jobsFound} Matches
+                        </button>
+                     </Link>
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-gray-800 border-dashed">
+                  <div className="p-4 bg-gray-800/50 rounded-full mb-4">
+                    <AlertCircle className="w-8 h-8 text-gray-500" />
+                  </div>
+                  <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
+                  <p className="text-gray-500 text-center max-w-sm">
+                    {activeFilter !== 'all' 
+                      ? "Try switching your filter to 'All' to see more results." 
+                      : "We couldn't find any jobs matching your criteria right now."}
+                  </p>
+                  <button 
+                    onClick={() => { setActiveFilter('all'); setSearchQuery(''); }}
+                    className="mt-6 px-4 py-2 text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
+                  >
+                    Clear Filters
+                  </button>
                 </div>
-              </>
-            ) : (
-              <div className="text-center py-12 text-gray-500 bg-gray-900/30 rounded-3xl border border-gray-800">
-                <Target className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-                <p className="text-lg font-medium mb-2">
-                  {activeFilter === 'new' ? 'No new matches' : 'No matches found'}
-                </p>
-                <p className="text-sm text-gray-600">
-                  {stats.jobsFound > 0 ? 'Try changing filters or check the Jobs page' : 'Your AI agent is scanning for opportunities'}
-                </p>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
         </div>
       </div>
-      <style jsx global>{`@keyframes pulse { 0%, 100% { opacity: 0.6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.05); } } .animation-delay-2000 { animation-delay: 2s; } .animation-delay-4000 { animation-delay: 4s; }`}</style>
     </div>
   );
 }
