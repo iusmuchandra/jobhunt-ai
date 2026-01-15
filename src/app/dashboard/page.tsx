@@ -1,7 +1,7 @@
 "use client";
 
 import AnalyticsDashboard from '@/components/AnalyticsDashboard';
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   collection, 
@@ -11,9 +11,7 @@ import {
   limit, 
   getDocs, 
   getCountFromServer, 
-  documentId,
-  writeBatch,
-  doc
+  documentId 
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -70,9 +68,6 @@ export default function DashboardPage() {
   });
   
   const [loadingData, setLoadingData] = useState(true);
-  
-  // Ref to ensure we only mark as viewed once per load
-  const hasMarkedViewed = useRef(false);
 
   // UI State
   const [activeFilter, setActiveFilter] = useState('all');
@@ -85,16 +80,20 @@ export default function DashboardPage() {
     }
   }, [user, loading, router]);
 
-  // --- Data Loading (FIXED) ---
+  // --- Data Loading ---
   useEffect(() => {
+    // 1. First safety check
     if (!user) return;
+
+    // 2. CRITICAL FIX: Capture UID here as a constant string.
+    // TypeScript now knows 'userId' is a string and cannot change to null.
     const userId = user.uid;
 
     async function fetchData() {
       setLoadingData(true);
 
       try {
-        // Get counts
+        // 3. Use 'userId' (the variable) in all queries, NEVER 'user.uid'
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
           getCountFromServer(
               query(collection(db, 'user_job_matches'), where('userId', '==', userId))
@@ -117,14 +116,14 @@ export default function DashboardPage() {
             interviews: interviewsCount.data().count
         });
 
-        // FIXED: Simpler query - just sort by matchScore
-        // We'll handle viewed sorting in memory
+        // 4. Use 'userId' variable here too
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
           where('userId', '==', userId),
-          orderBy('matchScore', 'desc'), // Just sort by score
-          limit(50) // Get more to ensure we have enough after filtering
+          orderBy('matchScore', 'desc'),
+          orderBy('notifiedAt', 'desc'),
+          limit(20)
         );
 
         const matchesSnapshot = await getDocs(q);
@@ -169,37 +168,14 @@ export default function DashboardPage() {
           const data = doc.data();
           const job = jobsMap.get(data.jobId);
           
-          if (!job) {
-            console.warn('Job not found for jobId:', data.jobId);
-            return null;
-          }
+          if (!job) return null;
           
           return { 
             id: doc.id, 
-            jobId: data.jobId,
-            matchScore: data.matchScore || 0,
-            matchReasons: data.matchReasons || [],
-            notifiedAt: data.notifiedAt,
-            viewed: data.viewed || false,
+            ...data, 
             job 
           } as JobMatch;
         }).filter(match => match !== null);
-
-        console.log('Jobs map size:', jobsMap.size);
-        console.log('Matches after filtering:', matches.length);
-        console.log('Sample jobIds from matches:', matchesSnapshot.docs.slice(0, 3).map(d => d.data().jobId));
-        console.log('Sample jobIds from map:', Array.from(jobsMap.keys()).slice(0, 3));
-
-        // SORT IN MEMORY: Unviewed first, then by score
-        matches.sort((a, b) => {
-          if (a.viewed === b.viewed) {
-            return b.matchScore - a.matchScore; // Same viewed status, sort by score
-          }
-          return a.viewed ? 1 : -1; // Unviewed (false) first
-        });
-
-        console.log('Loaded matches:', matches.length);
-        console.log('First 5:', matches.slice(0, 5).map(m => ({ title: m.job.title, viewed: m.viewed, score: m.matchScore })));
 
         setJobMatches(matches);
 
@@ -213,49 +189,19 @@ export default function DashboardPage() {
     fetchData();
   }, [user]);
 
-  // --- 2. MARK AS VIEWED EFFECT ---
-  useEffect(() => {
-    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current) {
-      const markTopMatchesAsViewed = async () => {
-        // Only mark jobs that are currently NOT viewed
-        const unviewedIds = jobMatches
-          .filter(m => !m.viewed)
-          .slice(0, 5) // Mark top 5
-          .map(m => m.id);
-
-        if (unviewedIds.length > 0) {
-          try {
-            const batch = writeBatch(db);
-            unviewedIds.forEach(id => {
-              const docRef = doc(db, 'user_job_matches', id);
-              batch.update(docRef, { viewed: true });
-            });
-            await batch.commit();
-            console.log("Marked as viewed:", unviewedIds);
-            hasMarkedViewed.current = true;
-          } catch (error) {
-            console.error("Error updating viewed status:", error);
-          }
-        }
-      };
-
-      markTopMatchesAsViewed();
-    }
-  }, [loadingData, jobMatches]);
-
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
       if (activeFilter === 'new') matchesTab = !match.viewed;
 
-      const queryStr = searchQuery.toLowerCase();
-      if (!queryStr) return matchesTab;
+      const query = searchQuery.toLowerCase();
+      if (!query) return matchesTab;
       
       const matchesSearch = 
-        match.job.title.toLowerCase().includes(queryStr) || 
-        match.job.company.toLowerCase().includes(queryStr) ||
-        (match.matchReasons?.some?.(r => r.toLowerCase().includes(queryStr)) ?? false);
+        match.job.title.toLowerCase().includes(query) || 
+        match.job.company.toLowerCase().includes(query) ||
+        (match.matchReasons?.some?.(r => r.toLowerCase().includes(query)) ?? false);
 
       return matchesTab && matchesSearch;
     });
@@ -266,15 +212,6 @@ export default function DashboardPage() {
     if (score >= 85) return 'A';
     if (score >= 75) return 'B';
     return 'C';
-  };
-
-  const getTierColor = (tier: string) => {
-    switch(tier) {
-      case 'S': return 'bg-yellow-500/20 text-yellow-400';
-      case 'A': return 'bg-green-500/20 text-green-400';
-      case 'B': return 'bg-blue-500/20 text-blue-400';
-      default: return 'bg-gray-500/20 text-gray-400';
-    }
   };
 
   // --- Render ---
@@ -403,7 +340,7 @@ export default function DashboardPage() {
                     activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
                   }`}
                 >
-                  {filter === 'all' ? 'All' : 'New'}
+                  {filter.charAt(0).toUpperCase() + filter.slice(1)}
                 </button>
               ))}
             </div>
@@ -414,6 +351,7 @@ export default function DashboardPage() {
               [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
             ) : filteredMatches.length > 0 ? (
               <>
+                {/* SLICE TO SHOW ONLY TOP 5 AFTER FILTERING */}
                 {filteredMatches.slice(0, 5).map(match => (
                   <Link key={match.id} href={`/jobs/${match.jobId}`} className="block mb-4">
                     <div className="group relative cursor-pointer">
@@ -429,27 +367,13 @@ export default function DashboardPage() {
                               <div className="flex-1">
                                 <div className="flex flex-wrap items-center gap-2 mb-1">
                                   <h3 className="text-lg md:text-xl font-bold">{match.job.title}</h3>
-                                  <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${getTierColor(getTier(match.matchScore))}`}>
-                                    Tier {getTier(match.matchScore)}
-                                  </span>
-                                  {!match.viewed && (
-                                    <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-500/20 text-blue-400 flex items-center gap-1">
-                                      <Sparkles className="w-3 h-3" />New Match
-                                    </span>
-                                  )}
+                                  <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${getTier(match.matchScore) === 'S' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-blue-500/20 text-blue-400'}`}>Tier {getTier(match.matchScore)}</span>
+                                  {!match.viewed && (<span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-500/20 text-blue-400 flex items-center gap-1"><Sparkles className="w-3 h-3" />New Match</span>)}
                                 </div>
                                 <div className="flex flex-wrap items-center gap-3 md:gap-4 text-sm text-gray-400">
                                   <span className="font-medium text-white">{match.job.company}</span>
                                   <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{match.job.location}</span>
-                                  <span className="flex items-center gap-1">
-                                    <Calendar className="w-3 h-3" />
-                                    {match.job.postedAt?.toDate ? 
-                                      formatDistanceToNow(match.job.postedAt.toDate(), { addSuffix: true }) : 
-                                      match.job.postedAt?.seconds ?
-                                      formatDistanceToNow(new Date(match.job.postedAt.seconds * 1000), { addSuffix: true }) :
-                                      'Recently'
-                                    }
-                                  </span>
+                                  <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{match.job.postedAt ? formatDistanceToNow(match.job.postedAt.toDate(), { addSuffix: true }) : 'Recently'}</span>
                                   {match.job.salary && <span className="font-semibold text-green-400">{match.job.salary}</span>}
                                 </div>
                               </div>
@@ -463,7 +387,7 @@ export default function DashboardPage() {
                           
                           <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
                             <div className="text-left md:text-right">
-                              <div className="text-3xl font-black bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{match.matchScore}%</div>
+                              <div className="text-3xl font-black bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{match.matchScore}</div>
                               <div className="text-xs text-gray-500 font-medium">MATCH</div>
                             </div>
                             <button className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl font-semibold hover:scale-105 transition-transform duration-300 flex items-center gap-2">
@@ -491,12 +415,7 @@ export default function DashboardPage() {
             ) : (
               <div className="text-center py-12 text-gray-500 bg-gray-900/30 rounded-3xl border border-gray-800">
                 <Target className="w-12 h-12 text-gray-700 mx-auto mb-3" />
-                <p className="text-lg font-medium mb-2">
-                  {activeFilter === 'new' ? 'No new matches' : 'No matches found'}
-                </p>
-                <p className="text-sm text-gray-600">
-                  {stats.jobsFound > 0 ? 'Try changing filters or check the Jobs page' : 'Your AI agent is scanning for opportunities'}
-                </p>
+                <p>No matches found.</p>
               </div>
             )}
           </div>
