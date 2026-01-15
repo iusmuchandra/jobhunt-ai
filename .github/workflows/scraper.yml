@@ -1,57 +1,39 @@
-name: Job Hunt AI Scraper
+name: Job Scraper
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Runs every 6 hours
-  workflow_dispatch:      # Allows manual click-to-run
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:  # ⭐ ADD THIS - enables manual triggers
+    inputs:
+      reason:
+        description: 'Trigger reason'
+        required: false
+        default: 'Manual trigger'
 
 jobs:
-  scrape-and-sync:
+  scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
-    # These match the Config class in your new job_scraper.py
-    env:
-      FIREBASE_CREDENTIALS_PATH: 'scripts/serviceAccountKey.json'
-      MAX_CONCURRENCY: 10
-      REQUEST_TIMEOUT: 60
-      JOB_EXPIRATION_DAYS: 30
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.10
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
           cache: 'pip'
-
-      # Install only what the new script needs
+      
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install aiohttp firebase-admin python-dotenv
-
-      # CRITICAL STEP: This creates the key file your script searches for
-      - name: Create Service Account Key
+          cd python-service
+          pip install -r requirements.txt
+      
+      - name: Run Scraper
+        env:
+          FIREBASE_CREDENTIALS_PATH: ${{ secrets.FIREBASE_CREDENTIALS_PATH }}
         run: |
-          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}' > scripts/serviceAccountKey.json
-
-      # Runs the scraper (which now handles syncing automatically)
-      - name: Run Job Scraper
-        run: python scripts/job_scraper.py
-
-      # Optional: Keep the failure notification if you want
-      - name: Notify on failure
-        if: failure()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 587
-          username: ${{ secrets.SENDER_EMAIL }}
-          password: ${{ secrets.SENDER_PASSWORD }}
-          subject: '🚨 Job Scraper Failed'
-          to: ${{ secrets.ADMIN_EMAIL }}
-          from: JobHunt AI
-          body: |
-            The scraper failed. Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          cd python-service
+          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > serviceAccountKey.json
+          python job_scraper.py
+          rm serviceAccountKey.json
