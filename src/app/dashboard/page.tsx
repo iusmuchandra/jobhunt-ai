@@ -11,9 +11,7 @@ import {
   limit, 
   getDocs, 
   getCountFromServer, 
-  documentId,
-  writeBatch,
-  doc
+  documentId
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -29,7 +27,7 @@ import {
   Loader2,
   ArrowRight,
   AlertCircle,
-  Bug // Added debug icon
+  Bug 
 } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
@@ -75,8 +73,6 @@ export default function DashboardPage() {
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
   
-  // Ref to ensure we only mark as viewed once per load
-  const hasMarkedViewed = useRef(false);
   const hasTriggeredScraper = useRef(false);
 
   // UI State
@@ -140,7 +136,7 @@ export default function DashboardPage() {
             jobId: doc.id,
             matchScore: 75,
             matchReasons: ['Recently posted', 'Top company'],
-            notifiedAt: data.postedAt, // Global jobs treat postedAt as notifiedAt
+            notifiedAt: data.postedAt, 
             viewed: false,
             job: {
               title: data.title,
@@ -161,7 +157,6 @@ export default function DashboardPage() {
 
     async function fetchData() {
       setLoadingData(true);
-      hasMarkedViewed.current = false;
 
       try {
         // Get counts
@@ -203,8 +198,7 @@ export default function DashboardPage() {
         const q = query(
           matchesRef,
           where('userId', '==', userId),
-          orderBy('matchScore', 'desc'),
-          orderBy('notifiedAt', 'desc'),
+          orderBy('notifiedAt', 'desc'), // ORDER BY NOTIFIED AT for fresh matches
           limit(20)
         );
 
@@ -311,7 +305,7 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, isNewUser, user]);
 
-  // --- Filtering Logic (FIXED: Uses Match Date 'notifiedAt' instead of Job Post Date) ---
+  // --- Filtering Logic (FIXED) ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
@@ -330,7 +324,7 @@ export default function DashboardPage() {
 
       // 2. Filter Logic
       if (activeFilter === 'new') {
-        // If viewed is undefined, treat as false (unviewed)
+        // Treat undefined as false (so missing 'viewed' field counts as New)
         matchesTab = match.viewed !== true; 
       } else if (activeFilter === 'today') {
         matchesTab = isToday(matchDate);
@@ -358,7 +352,6 @@ export default function DashboardPage() {
     return 'C';
   };
 
-  // Helper for displaying "Posted X ago" (Uses actual job post date)
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
     try {
