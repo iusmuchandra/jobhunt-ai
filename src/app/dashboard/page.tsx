@@ -31,7 +31,6 @@ import {
   AlertCircle
 } from 'lucide-react';
 import Link from 'next/link';
-// Added isToday and isThisWeek for the new filters
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
 
 // --- Interfaces ---
@@ -192,11 +191,7 @@ export default function DashboardPage() {
         // Check if new user (no matches)
         if (matchCount === 0) {
           setIsNewUser(true);
-          
-          // Trigger scraper - FIXED: Added optional chaining and null fallback
           triggerScraperForNewUser(user?.email || null);
-          
-          // Fetch global jobs as fallback
           await fetchGlobalJobs();
           setLoadingData(false);
           return;
@@ -297,16 +292,14 @@ export default function DashboardPage() {
         
         if (!snapshot.empty) {
           console.log('✨ Personalized matches are ready!');
-          // Trigger full data refresh
           window.location.reload();
           clearInterval(pollInterval);
         }
       } catch (error) {
         console.error('Error polling for matches:', error);
       }
-    }, 15000); // Poll every 15 seconds
+    }, 15000); 
     
-    // Stop polling after 5 minutes
     const timeout = setTimeout(() => {
       clearInterval(pollInterval);
     }, 300000);
@@ -317,69 +310,62 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, isNewUser, user]);
 
-  // --- Mark as viewed effect ---
-  useEffect(() => {
-    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && !showingGlobalJobs) {
-      const markTopMatchesAsViewed = async () => {
-        const unviewedMatches = jobMatches
-          .filter(m => !m.viewed)
-          .slice(0, 5);
+  /* * 🔴 DISABLED AUTO-VIEW LOGIC 🔴
+   * This prevented matches from showing up in the "New" filter because they were
+   * being marked as viewed immediately on load. Uncomment this if you want
+   * them to clear automatically.
+   */
+  // useEffect(() => {
+  //   if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && !showingGlobalJobs) {
+  //     const markTopMatchesAsViewed = async () => {
+  //       const unviewedMatches = jobMatches.filter(m => !m.viewed).slice(0, 5);
+  //       if (unviewedMatches.length > 0) {
+  //         try {
+  //           const batch = writeBatch(db);
+  //           unviewedMatches.forEach(match => {
+  //             const docRef = doc(db, 'user_job_matches', match.id);
+  //             batch.update(docRef, { viewed: true });
+  //           });
+  //           await batch.commit();
+  //           setJobMatches(prev => prev.map(m => 
+  //             unviewedMatches.find(um => um.id === m.id) ? { ...m, viewed: true } : m
+  //           ));
+  //           hasMarkedViewed.current = true;
+  //         } catch (error) { console.error(error); }
+  //       } else { hasMarkedViewed.current = true; }
+  //     };
+  //     const timer = setTimeout(markTopMatchesAsViewed, 500);
+  //     return () => clearTimeout(timer);
+  //   }
+  // }, [loadingData, jobMatches, showingGlobalJobs]);
 
-        if (unviewedMatches.length > 0) {
-          try {
-            const batch = writeBatch(db);
-            unviewedMatches.forEach(match => {
-              const docRef = doc(db, 'user_job_matches', match.id);
-              batch.update(docRef, { viewed: true });
-            });
-            await batch.commit();
-            
-            setJobMatches(prevMatches => 
-              prevMatches.map(match => {
-                if (unviewedMatches.find(um => um.id === match.id)) {
-                  return { ...match, viewed: true };
-                }
-                return match;
-              })
-            );
-            
-            hasMarkedViewed.current = true;
-          } catch (error) {
-            console.error("Error updating viewed status:", error);
-          }
-        } else {
-          hasMarkedViewed.current = true;
-        }
-      };
 
-      const timer = setTimeout(markTopMatchesAsViewed, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [loadingData, jobMatches, showingGlobalJobs]);
-
-  // --- Filtering Logic ---
+  // --- Filtering Logic (Fixed) ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
 
-      // Helper to extract a standard Date object from Firestore Timestamp or other formats
+      // 1. Safe Date Parsing
       const getJobDate = (postedAt: any) => {
-        if (!postedAt) return new Date();
+        if (!postedAt) return new Date(); // Fallback to now
         if (postedAt.toDate) return postedAt.toDate(); // Firestore Timestamp
         if (postedAt.seconds) return new Date(postedAt.seconds * 1000); // Seconds timestamp
-        return new Date(postedAt); // Standard JS Date or ISO string
+        if (typeof postedAt === 'string') return new Date(postedAt); // String format
+        return new Date(); // Fallback
       };
 
       const jobDate = getJobDate(match.job.postedAt);
 
+      // 2. Filter Logic
       if (activeFilter === 'new') {
-        matchesTab = !match.viewed;
+        matchesTab = !match.viewed; // Must be false/undefined
       } else if (activeFilter === 'today') {
         matchesTab = isToday(jobDate);
       } else if (activeFilter === 'week') {
         matchesTab = isThisWeek(jobDate);
       }
 
+      // 3. Search Logic
       const queryStr = searchQuery.toLowerCase();
       if (!queryStr) return matchesTab;
       
@@ -401,18 +387,13 @@ export default function DashboardPage() {
 
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
-    
     try {
-      if (postedAt.toDate) {
-        return formatDistanceToNow(postedAt.toDate(), { addSuffix: true });
-      } else if (postedAt.seconds) {
-        return formatDistanceToNow(new Date(postedAt.seconds * 1000), { addSuffix: true });
-      }
+      if (postedAt.toDate) return formatDistanceToNow(postedAt.toDate(), { addSuffix: true });
+      if (postedAt.seconds) return formatDistanceToNow(new Date(postedAt.seconds * 1000), { addSuffix: true });
+      return formatDistanceToNow(new Date(postedAt), { addSuffix: true });
     } catch (error) {
-      console.error('Error formatting date:', error);
+      return 'Recently';
     }
-    
-    return 'Recently';
   };
 
   // --- Render ---
@@ -605,6 +586,7 @@ export default function DashboardPage() {
                                   <h3 className="text-lg md:text-xl font-bold text-white group-hover:text-blue-400 transition-colors">
                                     {match.job.title}
                                   </h3>
+                                  {/* NEW BADGE LOGIC MATCHING FILTER */}
                                   {!match.viewed && !showingGlobalJobs && (
                                     <span className="px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-bold uppercase tracking-wider animate-pulse">
                                       New
@@ -695,7 +677,7 @@ export default function DashboardPage() {
                 <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
                 <p className="text-gray-500 text-center max-w-sm">
                   {activeFilter !== 'all' 
-                    ? "Try switching your filter to 'All' to see more results." 
+                    ? `No jobs found for '${activeFilter}' filter. Try switching to 'All'.`
                     : "We couldn't find any jobs matching your criteria right now."}
                 </p>
                 <button 
