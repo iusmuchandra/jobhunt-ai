@@ -28,12 +28,10 @@ import {
   Zap, 
   Loader2,
   ArrowRight,
-  AlertCircle,
-  Bug,
-  RefreshCw 
+  AlertCircle
 } from 'lucide-react';
 import Link from 'next/link';
-import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
 
 // --- Interfaces ---
 interface JobMatch {
@@ -75,8 +73,9 @@ export default function DashboardPage() {
   const [loadingData, setLoadingData] = useState(true);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
-  const [isResetting, setIsResetting] = useState(false); // State for reset button
   
+  // Ref to ensure we only mark as viewed once per load
+  const hasMarkedViewed = useRef(false);
   const hasTriggeredScraper = useRef(false);
 
   // UI State
@@ -114,31 +113,6 @@ export default function DashboardPage() {
     }
   }
 
-  // --- DEBUG TOOL: RESET VIEWED STATUS ---
-  const handleResetViews = async () => {
-    if (!user || jobMatches.length === 0) return;
-    setIsResetting(true);
-    try {
-      console.log("🔄 Resetting 'viewed' status for displayed jobs...");
-      const batch = writeBatch(db);
-      
-      jobMatches.forEach(match => {
-        // If it's a real user match (not global), reset it
-        if (!showingGlobalJobs) {
-            const ref = doc(db, 'user_job_matches', match.id);
-            batch.update(ref, { viewed: false });
-        }
-      });
-
-      await batch.commit();
-      console.log("✅ Reset complete. Reloading...");
-      window.location.reload();
-    } catch (error) {
-      console.error("❌ Error resetting views:", error);
-      setIsResetting(false);
-    }
-  };
-
   // --- Data Loading ---
   useEffect(() => {
     if (!user) return;
@@ -165,7 +139,7 @@ export default function DashboardPage() {
             jobId: doc.id,
             matchScore: 75,
             matchReasons: ['Recently posted', 'Top company'],
-            notifiedAt: data.postedAt, 
+            notifiedAt: data.postedAt,
             viewed: false,
             job: {
               title: data.title,
@@ -186,6 +160,7 @@ export default function DashboardPage() {
 
     async function fetchData() {
       setLoadingData(true);
+      hasMarkedViewed.current = false;
 
       try {
         // Get counts
@@ -216,7 +191,11 @@ export default function DashboardPage() {
         // Check if new user (no matches)
         if (matchCount === 0) {
           setIsNewUser(true);
-          triggerScraperForNewUser(user?.email || null);
+          
+          // Trigger scraper
+          triggerScraperForNewUser(user.email);
+          
+          // Fetch global jobs as fallback
           await fetchGlobalJobs();
           setLoadingData(false);
           return;
@@ -227,7 +206,8 @@ export default function DashboardPage() {
         const q = query(
           matchesRef,
           where('userId', '==', userId),
-          orderBy('notifiedAt', 'desc'), // ORDER BY NOTIFIED AT for fresh matches
+          orderBy('matchScore', 'desc'),
+          orderBy('notifiedAt', 'desc'),
           limit(20)
         );
 
@@ -316,14 +296,16 @@ export default function DashboardPage() {
         
         if (!snapshot.empty) {
           console.log('✨ Personalized matches are ready!');
+          // Trigger full data refresh
           window.location.reload();
           clearInterval(pollInterval);
         }
       } catch (error) {
         console.error('Error polling for matches:', error);
       }
-    }, 15000); 
+    }, 15000); // Poll every 15 seconds
     
+    // Stop polling after 5 minutes
     const timeout = setTimeout(() => {
       clearInterval(pollInterval);
     }, 300000);
@@ -334,33 +316,52 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, isNewUser, user]);
 
+  // --- Mark as viewed effect ---
+  useEffect(() => {
+    if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && !showingGlobalJobs) {
+      const markTopMatchesAsViewed = async () => {
+        const unviewedMatches = jobMatches
+          .filter(m => !m.viewed)
+          .slice(0, 5);
+
+        if (unviewedMatches.length > 0) {
+          try {
+            const batch = writeBatch(db);
+            unviewedMatches.forEach(match => {
+              const docRef = doc(db, 'user_job_matches', match.id);
+              batch.update(docRef, { viewed: true });
+            });
+            await batch.commit();
+            
+            setJobMatches(prevMatches => 
+              prevMatches.map(match => {
+                if (unviewedMatches.find(um => um.id === match.id)) {
+                  return { ...match, viewed: true };
+                }
+                return match;
+              })
+            );
+            
+            hasMarkedViewed.current = true;
+          } catch (error) {
+            console.error("Error updating viewed status:", error);
+          }
+        } else {
+          hasMarkedViewed.current = true;
+        }
+      };
+
+      const timer = setTimeout(markTopMatchesAsViewed, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [loadingData, jobMatches, showingGlobalJobs]);
+
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
+      if (activeFilter === 'new') matchesTab = !match.viewed;
 
-      // 1. Safe Date Parsing helper
-      const getSafeDate = (timestamp: any) => {
-        if (!timestamp) return new Date(); 
-        if (timestamp.toDate) return timestamp.toDate(); 
-        if (timestamp.seconds) return new Date(timestamp.seconds * 1000); 
-        if (typeof timestamp === 'string') return new Date(timestamp); 
-        return new Date(); 
-      };
-
-      // USE notifiedAt (When match was found) for filtering
-      const matchDate = getSafeDate(match.notifiedAt);
-
-      // 2. Filter Logic
-      if (activeFilter === 'new') {
-        matchesTab = match.viewed !== true; 
-      } else if (activeFilter === 'today') {
-        matchesTab = isToday(matchDate);
-      } else if (activeFilter === 'week') {
-        matchesTab = isThisWeek(matchDate);
-      }
-
-      // 3. Search Logic
       const queryStr = searchQuery.toLowerCase();
       if (!queryStr) return matchesTab;
       
@@ -382,15 +383,18 @@ export default function DashboardPage() {
 
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
+    
     try {
-      let date;
-      if (postedAt.toDate) date = postedAt.toDate();
-      else if (postedAt.seconds) date = new Date(postedAt.seconds * 1000);
-      else date = new Date(postedAt);
-      return formatDistanceToNow(date, { addSuffix: true });
+      if (postedAt.toDate) {
+        return formatDistanceToNow(postedAt.toDate(), { addSuffix: true });
+      } else if (postedAt.seconds) {
+        return formatDistanceToNow(new Date(postedAt.seconds * 1000), { addSuffix: true });
+      }
     } catch (error) {
-      return 'Recently';
+      console.error('Error formatting date:', error);
     }
+    
+    return 'Recently';
   };
 
   // --- Render ---
@@ -543,7 +547,7 @@ export default function DashboardPage() {
             {/* Filter Tabs */}
             {!showingGlobalJobs && (
               <div className="flex items-center gap-2 bg-gray-900/50 p-1 rounded-xl border border-gray-800">
-                {['all', 'new', 'today', 'week'].map(filter => (
+                {['all', 'new'].map(filter => (
                   <button
                     key={filter}
                     onClick={() => setActiveFilter(filter)}
@@ -551,10 +555,7 @@ export default function DashboardPage() {
                       activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
                     }`}
                   >
-                    {filter === 'all' ? 'All' : 
-                     filter === 'new' ? 'New' :
-                     filter === 'today' ? '🔥 Today' :
-                     '📅 This Week'}
+                    {filter === 'all' ? 'All' : 'New'}
                   </button>
                 ))}
               </div>
@@ -562,26 +563,6 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-4">
-            {/* DEBUGGING AID + RESET BUTTON */}
-            {!loadingData && jobMatches.length > 0 && filteredMatches.length === 0 && (
-              <div className="p-4 bg-gray-800/50 rounded-xl border border-yellow-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div className="flex items-center gap-3 text-xs text-yellow-500 font-mono">
-                    <Bug className="w-4 h-4 flex-shrink-0" />
-                    <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all.</span>
-                </div>
-                
-                {/* RESET BUTTON */}
-                <button 
-                  onClick={handleResetViews}
-                  disabled={isResetting}
-                  className="flex items-center gap-2 px-4 py-2 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 text-xs font-bold uppercase tracking-wider rounded-lg border border-yellow-500/20 transition-all disabled:opacity-50"
-                >
-                  {isResetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                  {isResetting ? "Resetting..." : "Reset All to 'New'"}
-                </button>
-              </div>
-            )}
-
             {loadingData ? (
               [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
             ) : filteredMatches.length > 0 ? (
@@ -603,7 +584,6 @@ export default function DashboardPage() {
                                   <h3 className="text-lg md:text-xl font-bold text-white group-hover:text-blue-400 transition-colors">
                                     {match.job.title}
                                   </h3>
-                                  {/* NEW BADGE LOGIC MATCHING FILTER */}
                                   {!match.viewed && !showingGlobalJobs && (
                                     <span className="px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-bold uppercase tracking-wider animate-pulse">
                                       New
@@ -621,7 +601,6 @@ export default function DashboardPage() {
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     <Calendar className="w-3.5 h-3.5" />
-                                    {/* Displays Job Post date for accuracy, but filter uses Match Date */}
                                     {formatJobDate(match.job.postedAt)}
                                   </div>
                                   {match.job.salary && (
@@ -695,7 +674,7 @@ export default function DashboardPage() {
                 <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
                 <p className="text-gray-500 text-center max-w-sm">
                   {activeFilter !== 'all' 
-                    ? `No jobs found for '${activeFilter}' filter. Try switching to 'All'.`
+                    ? "Try switching your filter to 'All' to see more results." 
                     : "We couldn't find any jobs matching your criteria right now."}
                 </p>
                 <button 
