@@ -89,128 +89,34 @@ export default function DashboardPage() {
     }
   }, [user, loading, router]);
 
+  // --- Helper: Trigger Scraper ---
+  async function triggerScraperForNewUser(email: string | null) {
+    if (hasTriggeredScraper.current) return;
+    
+    try {
+      console.log('🎯 Triggering scraper for new user:', email);
+      hasTriggeredScraper.current = true;
+      
+      const response = await fetch('/api/trigger-scraper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userEmail: email })
+      });
+      
+      if (response.ok) {
+        console.log('✅ Scraper triggered successfully');
+      } else {
+        console.error('❌ Failed to trigger scraper:', await response.text());
+      }
+    } catch (error) {
+      console.error('❌ Error triggering scraper:', error);
+    }
+  }
+
   // --- Data Loading ---
   useEffect(() => {
     if (!user) return;
     const userId = user.uid;
-
-    async function fetchData() {
-      setLoadingData(true);
-      hasMarkedViewed.current = false;
-
-      try {
-        // Get counts
-        const [matchesCount, appsCount, interviewsCount] = await Promise.all([
-          getCountFromServer(
-              query(collection(db, 'user_job_matches'), where('userId', '==', userId))
-          ),
-          getCountFromServer(
-              query(collection(db, 'applications'), where('userId', '==', userId))
-          ),
-          getCountFromServer(
-              query(
-              collection(db, 'applications'),
-              where('userId', '==', userId),
-              where('status', '==', 'interview')
-              )
-          )
-        ]);
-
-        const matchCount = matchesCount.data().count;
-
-        setStats({
-            jobsFound: matchCount,
-            jobsApplied: appsCount.data().count,
-            interviews: interviewsCount.data().count
-        });
-
-        // Check if new user (no matches)
-        if (matchCount === 0) {
-          setIsNewUser(true);
-          
-          // Trigger scraper once for new users
-          if (!hasTriggeredScraper.current) {
-            hasTriggeredScraper.current = true;
-            triggerScraperForNewUser(user.email);
-          }
-          
-          // Fetch global jobs as fallback
-          await fetchGlobalJobs();
-          return;
-        }
-
-        // Fetch user-specific matches
-        const matchesRef = collection(db, 'user_job_matches');
-        const q = query(
-          matchesRef,
-          where('userId', '==', userId),
-          orderBy('matchScore', 'desc'),
-          orderBy('notifiedAt', 'desc'),
-          limit(20)
-        );
-
-        const matchesSnapshot = await getDocs(q);
-        
-        if (matchesSnapshot.empty) {
-          await fetchGlobalJobs();
-          return;
-        }
-
-        // Collect all job IDs
-        const jobIds = matchesSnapshot.docs
-          .map(doc => doc.data().jobId)
-          .filter(Boolean);
-
-        if (jobIds.length === 0) {
-          await fetchGlobalJobs();
-          return;
-        }
-
-        // Fetch jobs (Chunking logic)
-        const chunks = [];
-        for (let i = 0; i < jobIds.length; i += 10) {
-            chunks.push(jobIds.slice(i, i + 10));
-        }
-
-        const jobsPromises = chunks.map(chunk => 
-            getDocs(query(collection(db, 'jobs'), where(documentId(), 'in', chunk)))
-        );
-        
-        const jobsSnapshots = await Promise.all(jobsPromises);
-        
-        const jobsMap = new Map();
-        jobsSnapshots.forEach(snap => {
-            snap.docs.forEach(doc => {
-                jobsMap.set(doc.id, doc.data());
-            });
-        });
-
-        const matches = matchesSnapshot.docs.map(doc => {
-          const data = doc.data();
-          const job = jobsMap.get(data.jobId);
-          
-          if (!job) return null;
-          
-          return { 
-            id: doc.id, 
-            jobId: data.jobId,
-            matchScore: data.matchScore || 0,
-            matchReasons: data.matchReasons || [],
-            notifiedAt: data.notifiedAt,
-            viewed: data.viewed || false,
-            job 
-          } as JobMatch;
-        }).filter(match => match !== null);
-
-        setJobMatches(matches);
-        setShowingGlobalJobs(false);
-
-      } catch (error) {
-        console.error('Error fetching dashboard data:', error);
-      } finally {
-        setLoadingData(false);
-      }
-    }
 
     async function fetchGlobalJobs() {
       try {
@@ -252,22 +158,121 @@ export default function DashboardPage() {
       }
     }
 
-    async function triggerScraperForNewUser(email: string | null) {
+    async function fetchData() {
+      setLoadingData(true);
+      hasMarkedViewed.current = false;
+
       try {
-        console.log('🎯 Triggering scraper for new user:', email);
-        const response = await fetch('/api/trigger-scraper', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userEmail: email })
+        // Get counts
+        const [matchesCount, appsCount, interviewsCount] = await Promise.all([
+          getCountFromServer(
+              query(collection(db, 'user_job_matches'), where('userId', '==', userId))
+          ),
+          getCountFromServer(
+              query(collection(db, 'applications'), where('userId', '==', userId))
+          ),
+          getCountFromServer(
+              query(
+              collection(db, 'applications'),
+              where('userId', '==', userId),
+              where('status', '==', 'interview')
+              )
+          )
+        ]);
+
+        const matchCount = matchesCount.data().count;
+
+        setStats({
+            jobsFound: matchCount,
+            jobsApplied: appsCount.data().count,
+            interviews: interviewsCount.data().count
         });
-        
-        if (response.ok) {
-          console.log('✅ Scraper triggered successfully');
-        } else {
-          console.error('❌ Failed to trigger scraper:', await response.text());
+
+        // Check if new user (no matches)
+        if (matchCount === 0) {
+          setIsNewUser(true);
+          
+          // Trigger scraper
+          triggerScraperForNewUser(user.email);
+          
+          // Fetch global jobs as fallback
+          await fetchGlobalJobs();
+          setLoadingData(false);
+          return;
         }
+
+        // Fetch user-specific matches
+        const matchesRef = collection(db, 'user_job_matches');
+        const q = query(
+          matchesRef,
+          where('userId', '==', userId),
+          orderBy('matchScore', 'desc'),
+          orderBy('notifiedAt', 'desc'),
+          limit(20)
+        );
+
+        const matchesSnapshot = await getDocs(q);
+        
+        if (matchesSnapshot.empty) {
+          await fetchGlobalJobs();
+          setLoadingData(false);
+          return;
+        }
+
+        // Collect all job IDs
+        const jobIds = matchesSnapshot.docs
+          .map(doc => doc.data().jobId)
+          .filter(Boolean);
+
+        if (jobIds.length === 0) {
+          await fetchGlobalJobs();
+          setLoadingData(false);
+          return;
+        }
+
+        // Fetch jobs (Chunking logic)
+        const chunks = [];
+        for (let i = 0; i < jobIds.length; i += 10) {
+            chunks.push(jobIds.slice(i, i + 10));
+        }
+
+        const jobsPromises = chunks.map(chunk => 
+            getDocs(query(collection(db, 'jobs'), where(documentId(), 'in', chunk)))
+        );
+        
+        const jobsSnapshots = await Promise.all(jobsPromises);
+        
+        const jobsMap = new Map();
+        jobsSnapshots.forEach(snap => {
+            snap.docs.forEach(doc => {
+                jobsMap.set(doc.id, doc.data());
+            });
+        });
+
+        const matches = matchesSnapshot.docs.map(doc => {
+          const data = doc.data();
+          const job = jobsMap.get(data.jobId);
+          
+          if (!job) return null;
+          
+          return { 
+            id: doc.id, 
+            jobId: data.jobId,
+            matchScore: data.matchScore || 0,
+            matchReasons: data.matchReasons || [],
+            notifiedAt: data.notifiedAt,
+            viewed: data.viewed || false,
+            job 
+          } as JobMatch;
+        }).filter(match => match !== null) as JobMatch[];
+
+        setJobMatches(matches);
+        setShowingGlobalJobs(false);
+
       } catch (error) {
-        console.error('❌ Error triggering scraper:', error);
+        console.error('Error fetching dashboard data:', error);
+      } finally {
+        setLoadingData(false);
       }
     }
 
@@ -291,8 +296,6 @@ export default function DashboardPage() {
         
         if (!snapshot.empty) {
           console.log('✨ Personalized matches are ready!');
-          setShowingGlobalJobs(false);
-          setIsNewUser(false);
           // Trigger full data refresh
           window.location.reload();
           clearInterval(pollInterval);
@@ -305,7 +308,6 @@ export default function DashboardPage() {
     // Stop polling after 5 minutes
     const timeout = setTimeout(() => {
       clearInterval(pollInterval);
-      console.log('⏱️ Stopped polling for personalized matches');
     }, 300000);
     
     return () => {
@@ -379,15 +381,6 @@ export default function DashboardPage() {
     return 'C';
   };
 
-  const getTierColor = (tier: string) => {
-    switch(tier) {
-      case 'S': return 'bg-yellow-500/20 text-yellow-400';
-      case 'A': return 'bg-green-500/20 text-green-400';
-      case 'B': return 'bg-blue-500/20 text-blue-400';
-      default: return 'bg-gray-500/20 text-gray-400';
-    }
-  };
-
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
     
@@ -450,7 +443,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* New User Notice */}
+        {/* New User Banner */}
         {showingGlobalJobs && isNewUser && (
           <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-2xl p-6">
             <div className="flex items-start gap-4">
@@ -636,62 +629,63 @@ export default function DashboardPage() {
                                 </div>
                               </div>
                             </div>
+                          </div>
 
-                            {/* Right Side: Score & Action */}
-                            <div className="flex md:flex-col items-center md:items-end justify-between gap-4 pl-0 md:pl-6 md:border-l border-gray-800 min-w-[100px]">
-                              <div className="flex flex-col items-center md:items-end">
-                                <div className={`flex items-center justify-center w-12 h-12 rounded-full border-2 text-sm font-bold shadow-[0_0_15px_rgba(0,0,0,0.3)] ${
-                                  getTier(match.matchScore) === 'S' ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10 shadow-yellow-500/20' :
-                                  getTier(match.matchScore) === 'A' ? 'border-green-500 text-green-400 bg-green-500/10 shadow-green-500/20' :
-                                  'border-blue-500 text-blue-400 bg-blue-500/10 shadow-blue-500/20'
-                                }`}>
-                                  {match.matchScore}%
-                                </div>
-                                <span className={`text-[10px] font-bold mt-1 ${
-                                   getTier(match.matchScore) === 'S' ? 'text-yellow-500' : 'text-gray-500'
-                                }`}>
-                                  MATCH
-                                </span>
+                          {/* Right Side: Score & Action */}
+                          <div className="flex md:flex-col items-center md:items-end justify-between gap-4 pl-0 md:pl-6 md:border-l border-gray-800 min-w-[100px]">
+                            <div className="flex flex-col items-center md:items-end">
+                              <div className={`flex items-center justify-center w-12 h-12 rounded-full border-2 text-sm font-bold shadow-[0_0_15px_rgba(0,0,0,0.3)] ${
+                                getTier(match.matchScore) === 'S' ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10 shadow-yellow-500/20' :
+                                getTier(match.matchScore) === 'A' ? 'border-green-500 text-green-400 bg-green-500/10 shadow-green-500/20' :
+                                'border-blue-500 text-blue-400 bg-blue-500/10 shadow-blue-500/20'
+                              }`}>
+                                {match.matchScore}%
                               </div>
-
-                              <button className="hidden md:flex items-center gap-2 text-sm font-medium text-blue-400 group-hover:text-blue-300 transition-colors">
-                                View Job <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                              </button>
+                              <span className={`text-[10px] font-bold mt-1 ${
+                                  getTier(match.matchScore) === 'S' ? 'text-yellow-500' : 'text-gray-500'
+                              }`}>
+                                MATCH
+                              </span>
                             </div>
+
+                            <button className="hidden md:flex items-center gap-2 text-sm font-medium text-blue-400 group-hover:text-blue-300 transition-colors">
+                              View Job <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                            </button>
                           </div>
                         </div>
                       </div>
+                    </div>
+                  </Link>
+                ))}
+                
+                <div className="flex justify-center mt-8">
+                    <Link href="/jobs">
+                      <button className="px-6 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-sm font-medium transition-colors border border-gray-700">
+                          View All {stats.jobsFound} Matches
+                      </button>
                     </Link>
-                  ))}
-                  
-                  <div className="flex justify-center mt-8">
-                     <Link href="/jobs">
-                        <button className="px-6 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-sm font-medium transition-colors border border-gray-700">
-                           View All {stats.jobsFound} Matches
-                        </button>
-                     </Link>
-                  </div>
-                </>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-gray-800 border-dashed">
-                  <div className="p-4 bg-gray-800/50 rounded-full mb-4">
-                    <AlertCircle className="w-8 h-8 text-gray-500" />
-                  </div>
-                  <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
-                  <p className="text-gray-500 text-center max-w-sm">
-                    {activeFilter !== 'all' 
-                      ? "Try switching your filter to 'All' to see more results." 
-                      : "We couldn't find any jobs matching your criteria right now."}
-                  </p>
-                  <button 
-                    onClick={() => { setActiveFilter('all'); setSearchQuery(''); }}
-                    className="mt-6 px-4 py-2 text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
-                  >
-                    Clear Filters
-                  </button>
                 </div>
-              )}
-            </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-gray-800 border-dashed">
+                <div className="p-4 bg-gray-800/50 rounded-full mb-4">
+                  <AlertCircle className="w-8 h-8 text-gray-500" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
+                <p className="text-gray-500 text-center max-w-sm">
+                  {activeFilter !== 'all' 
+                    ? "Try switching your filter to 'All' to see more results." 
+                    : "We couldn't find any jobs matching your criteria right now."}
+                </p>
+                <button 
+                  onClick={() => { setActiveFilter('all'); setSearchQuery(''); }}
+                  className="mt-6 px-4 py-2 text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
