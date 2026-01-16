@@ -11,7 +11,9 @@ import {
   limit, 
   getDocs, 
   getCountFromServer, 
-  documentId
+  documentId,
+  writeBatch,
+  doc
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,7 +29,8 @@ import {
   Loader2,
   ArrowRight,
   AlertCircle,
-  Bug 
+  Bug,
+  RefreshCw 
 } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
@@ -72,6 +75,7 @@ export default function DashboardPage() {
   const [loadingData, setLoadingData] = useState(true);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
+  const [isResetting, setIsResetting] = useState(false); // State for reset button
   
   const hasTriggeredScraper = useRef(false);
 
@@ -109,6 +113,31 @@ export default function DashboardPage() {
       console.error('❌ Error triggering scraper:', error);
     }
   }
+
+  // --- DEBUG TOOL: RESET VIEWED STATUS ---
+  const handleResetViews = async () => {
+    if (!user || jobMatches.length === 0) return;
+    setIsResetting(true);
+    try {
+      console.log("🔄 Resetting 'viewed' status for displayed jobs...");
+      const batch = writeBatch(db);
+      
+      jobMatches.forEach(match => {
+        // If it's a real user match (not global), reset it
+        if (!showingGlobalJobs) {
+            const ref = doc(db, 'user_job_matches', match.id);
+            batch.update(ref, { viewed: false });
+        }
+      });
+
+      await batch.commit();
+      console.log("✅ Reset complete. Reloading...");
+      window.location.reload();
+    } catch (error) {
+      console.error("❌ Error resetting views:", error);
+      setIsResetting(false);
+    }
+  };
 
   // --- Data Loading ---
   useEffect(() => {
@@ -305,7 +334,7 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, isNewUser, user]);
 
-  // --- Filtering Logic (FIXED) ---
+  // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
@@ -324,7 +353,6 @@ export default function DashboardPage() {
 
       // 2. Filter Logic
       if (activeFilter === 'new') {
-        // Treat undefined as false (so missing 'viewed' field counts as New)
         matchesTab = match.viewed !== true; 
       } else if (activeFilter === 'today') {
         matchesTab = isToday(matchDate);
@@ -534,11 +562,23 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-4">
-            {/* DEBUGGING AID: Only shows if data loaded but list empty */}
+            {/* DEBUGGING AID + RESET BUTTON */}
             {!loadingData && jobMatches.length > 0 && filteredMatches.length === 0 && (
-              <div className="p-3 bg-gray-800/50 rounded-lg border border-yellow-500/20 flex items-center gap-3 text-xs text-yellow-500 font-mono">
-                <Bug className="w-4 h-4" />
-                <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all. Try 'All'.</span>
+              <div className="p-4 bg-gray-800/50 rounded-xl border border-yellow-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-3 text-xs text-yellow-500 font-mono">
+                    <Bug className="w-4 h-4 flex-shrink-0" />
+                    <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all.</span>
+                </div>
+                
+                {/* RESET BUTTON */}
+                <button 
+                  onClick={handleResetViews}
+                  disabled={isResetting}
+                  className="flex items-center gap-2 px-4 py-2 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 text-xs font-bold uppercase tracking-wider rounded-lg border border-yellow-500/20 transition-all disabled:opacity-50"
+                >
+                  {isResetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                  {isResetting ? "Resetting..." : "Reset All to 'New'"}
+                </button>
               </div>
             )}
 
