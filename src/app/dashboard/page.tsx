@@ -192,8 +192,8 @@ export default function DashboardPage() {
         if (matchCount === 0) {
           setIsNewUser(true);
           
-          // Trigger scraper
-          triggerScraperForNewUser(user.email);
+          // Trigger scraper - FIXED: Added optional chaining and null fallback
+          triggerScraperForNewUser(user?.email || null);
           
           // Fetch global jobs as fallback
           await fetchGlobalJobs();
