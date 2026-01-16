@@ -25,7 +25,8 @@ import {
   ArrowRight, Target, ChevronLeft, ChevronRight, Sparkles, 
   X, Briefcase, Zap, Bookmark, Filter
 } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+// Added isToday and isThisWeek for better filtering
+import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
 
 // --- Interfaces ---
 interface Job {
@@ -162,6 +163,15 @@ export default function JobsPage() {
     e.currentTarget.style.setProperty("--mouse-y", `${y}px`);
   };
 
+  // --- Helper: Robust Date Parsing (Same as Dashboard) ---
+  const getJobDate = (postedAt: any) => {
+    if (!postedAt) return new Date(); // Fallback to now
+    if (postedAt.toDate) return postedAt.toDate(); // Firestore Timestamp
+    if (postedAt.seconds) return new Date(postedAt.seconds * 1000); // Seconds timestamp
+    if (typeof postedAt === 'string') return new Date(postedAt); // String format
+    return new Date(); // Fallback
+  };
+
   // --- 1. Fetch User Profile ---
   useEffect(() => {
     const fetchUserProfile = async () => {
@@ -249,11 +259,9 @@ export default function JobsPage() {
       const allJobDocs = jobsSnapshots.flatMap(snap => snap.docs);
       
       const matchedJobs = allJobDocs.map(jobDoc => {
-        // Use partial to avoid 'id' conflict during spread
         const jobData = jobDoc.data();
         const match = matchesData.find(m => m.jobId === jobDoc.id);
         
-        // FIX: Spread jobData first, THEN explicitly set id to overwrite any id in data
         return {
           ...jobData,
           id: jobDoc.id,
@@ -315,15 +323,21 @@ export default function JobsPage() {
     }
   };
 
-  // --- Filter Logic (Enhanced with Time Filtering) ---
+  // --- Filter Logic (Enhanced with Robust Time Parsing) ---
   const filteredJobs = jobs.filter(job => {
     if (!profileLoaded && negativeFilters.length === 0) return false;
     
-    // Time Calculations
-    const now = new Date();
-    const jobDate = job.postedAt?.seconds ? new Date(job.postedAt.seconds * 1000) : new Date();
-    const diffTime = Math.abs(now.getTime() - jobDate.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    // Robust Time Calculations
+    const jobDate = getJobDate(job.postedAt);
+
+    // Debugging (Remove in prod)
+    if (statusFilter === 'today' || statusFilter === 'week') {
+      console.log(`Checking Job: ${job.title}`, {
+         jobDate: jobDate.toLocaleString(),
+         isToday: isToday(jobDate),
+         isThisWeek: isThisWeek(jobDate)
+      });
+    }
 
     // 1. Negative Filter
     if (negativeFilters.length > 0) {
@@ -344,11 +358,11 @@ export default function JobsPage() {
     // 3. Company Filter
     const matchesCompany = companyFilter === 'all' || job.company === companyFilter;
 
-    // 4. Status Filter (Includes Today/Week logic)
+    // 4. Status Filter (Fixed with isToday/isThisWeek)
     const matchesStatus = statusFilter === 'all' || 
       (statusFilter === 'new' && !job.viewed) ||
-      (statusFilter === 'today' && diffDays <= 1) ||
-      (statusFilter === 'week' && diffDays <= 7);
+      (statusFilter === 'today' && isToday(jobDate)) ||
+      (statusFilter === 'week' && isThisWeek(jobDate));
 
     // 5. Remote/Location
     const jobLocation = (job.location || '').toLowerCase();
@@ -599,9 +613,8 @@ export default function JobsPage() {
                                   <span>•</span>
                                   <span className="text-gray-500 flex items-center gap-1">
                                     <Clock className="w-3 h-3" /> 
-                                    {job.postedAt?.seconds 
-                                      ? formatDistanceToNow(new Date(job.postedAt.seconds * 1000), { addSuffix: true }) 
-                                      : 'Recently'}
+                                    {/* Robust display date */}
+                                    {formatDistanceToNow(getJobDate(job.postedAt), { addSuffix: true })}
                                   </span>
                                 </div>
                               </div>
@@ -615,8 +628,8 @@ export default function JobsPage() {
                                 </span>
                               )}
 
-                              {/* NEW: Freshness Badge */}
-                              {job.postedAt?.seconds && (Date.now() - job.postedAt.seconds * 1000) < (24 * 60 * 60 * 1000) && (
+                              {/* NEW: Robust Freshness Badge */}
+                              {isToday(getJobDate(job.postedAt)) && (
                                 <span className="px-2 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 animate-pulse">
                                   🔥 Fresh
                                 </span>

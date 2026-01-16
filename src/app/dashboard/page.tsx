@@ -28,7 +28,8 @@ import {
   Zap, 
   Loader2,
   ArrowRight,
-  AlertCircle
+  AlertCircle,
+  Bug // Added debug icon
 } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
@@ -139,7 +140,7 @@ export default function DashboardPage() {
             jobId: doc.id,
             matchScore: 75,
             matchReasons: ['Recently posted', 'Top company'],
-            notifiedAt: data.postedAt,
+            notifiedAt: data.postedAt, // Global jobs treat postedAt as notifiedAt
             viewed: false,
             job: {
               title: data.title,
@@ -310,59 +311,31 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, isNewUser, user]);
 
-  /* * 🔴 DISABLED AUTO-VIEW LOGIC 🔴
-   * This prevented matches from showing up in the "New" filter because they were
-   * being marked as viewed immediately on load. Uncomment this if you want
-   * them to clear automatically.
-   */
-  // useEffect(() => {
-  //   if (!loadingData && jobMatches.length > 0 && !hasMarkedViewed.current && !showingGlobalJobs) {
-  //     const markTopMatchesAsViewed = async () => {
-  //       const unviewedMatches = jobMatches.filter(m => !m.viewed).slice(0, 5);
-  //       if (unviewedMatches.length > 0) {
-  //         try {
-  //           const batch = writeBatch(db);
-  //           unviewedMatches.forEach(match => {
-  //             const docRef = doc(db, 'user_job_matches', match.id);
-  //             batch.update(docRef, { viewed: true });
-  //           });
-  //           await batch.commit();
-  //           setJobMatches(prev => prev.map(m => 
-  //             unviewedMatches.find(um => um.id === m.id) ? { ...m, viewed: true } : m
-  //           ));
-  //           hasMarkedViewed.current = true;
-  //         } catch (error) { console.error(error); }
-  //       } else { hasMarkedViewed.current = true; }
-  //     };
-  //     const timer = setTimeout(markTopMatchesAsViewed, 500);
-  //     return () => clearTimeout(timer);
-  //   }
-  // }, [loadingData, jobMatches, showingGlobalJobs]);
-
-
-  // --- Filtering Logic (Fixed) ---
+  // --- Filtering Logic (FIXED: Uses Match Date 'notifiedAt' instead of Job Post Date) ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
 
-      // 1. Safe Date Parsing
-      const getJobDate = (postedAt: any) => {
-        if (!postedAt) return new Date(); // Fallback to now
-        if (postedAt.toDate) return postedAt.toDate(); // Firestore Timestamp
-        if (postedAt.seconds) return new Date(postedAt.seconds * 1000); // Seconds timestamp
-        if (typeof postedAt === 'string') return new Date(postedAt); // String format
-        return new Date(); // Fallback
+      // 1. Safe Date Parsing helper
+      const getSafeDate = (timestamp: any) => {
+        if (!timestamp) return new Date(); 
+        if (timestamp.toDate) return timestamp.toDate(); 
+        if (timestamp.seconds) return new Date(timestamp.seconds * 1000); 
+        if (typeof timestamp === 'string') return new Date(timestamp); 
+        return new Date(); 
       };
 
-      const jobDate = getJobDate(match.job.postedAt);
+      // USE notifiedAt (When match was found) for filtering
+      const matchDate = getSafeDate(match.notifiedAt);
 
       // 2. Filter Logic
       if (activeFilter === 'new') {
-        matchesTab = !match.viewed; // Must be false/undefined
+        // If viewed is undefined, treat as false (unviewed)
+        matchesTab = match.viewed !== true; 
       } else if (activeFilter === 'today') {
-        matchesTab = isToday(jobDate);
+        matchesTab = isToday(matchDate);
       } else if (activeFilter === 'week') {
-        matchesTab = isThisWeek(jobDate);
+        matchesTab = isThisWeek(matchDate);
       }
 
       // 3. Search Logic
@@ -385,12 +358,15 @@ export default function DashboardPage() {
     return 'C';
   };
 
+  // Helper for displaying "Posted X ago" (Uses actual job post date)
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
     try {
-      if (postedAt.toDate) return formatDistanceToNow(postedAt.toDate(), { addSuffix: true });
-      if (postedAt.seconds) return formatDistanceToNow(new Date(postedAt.seconds * 1000), { addSuffix: true });
-      return formatDistanceToNow(new Date(postedAt), { addSuffix: true });
+      let date;
+      if (postedAt.toDate) date = postedAt.toDate();
+      else if (postedAt.seconds) date = new Date(postedAt.seconds * 1000);
+      else date = new Date(postedAt);
+      return formatDistanceToNow(date, { addSuffix: true });
     } catch (error) {
       return 'Recently';
     }
@@ -565,6 +541,14 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-4">
+            {/* DEBUGGING AID: Only shows if data loaded but list empty */}
+            {!loadingData && jobMatches.length > 0 && filteredMatches.length === 0 && (
+              <div className="p-3 bg-gray-800/50 rounded-lg border border-yellow-500/20 flex items-center gap-3 text-xs text-yellow-500 font-mono">
+                <Bug className="w-4 h-4" />
+                <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all. Try 'All'.</span>
+              </div>
+            )}
+
             {loadingData ? (
               [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
             ) : filteredMatches.length > 0 ? (
@@ -604,6 +588,7 @@ export default function DashboardPage() {
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     <Calendar className="w-3.5 h-3.5" />
+                                    {/* Displays Job Post date for accuracy, but filter uses Match Date */}
                                     {formatJobDate(match.job.postedAt)}
                                   </div>
                                   {match.job.salary && (
