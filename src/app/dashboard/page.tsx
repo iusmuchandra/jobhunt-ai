@@ -30,7 +30,8 @@ import {
   ArrowRight,
   AlertCircle,
   Bug,
-  RefreshCw 
+  RefreshCw,
+  LayoutDashboard
 } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
@@ -75,7 +76,7 @@ export default function DashboardPage() {
   const [loadingData, setLoadingData] = useState(true);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
-  const [isResetting, setIsResetting] = useState(false); // State for reset button
+  const [isResetting, setIsResetting] = useState(false);
   
   const hasTriggeredScraper = useRef(false);
 
@@ -106,8 +107,6 @@ export default function DashboardPage() {
       
       if (response.ok) {
         console.log('✅ Scraper triggered successfully');
-      } else {
-        console.error('❌ Failed to trigger scraper:', await response.text());
       }
     } catch (error) {
       console.error('❌ Error triggering scraper:', error);
@@ -123,7 +122,6 @@ export default function DashboardPage() {
       const batch = writeBatch(db);
       
       jobMatches.forEach(match => {
-        // If it's a real user match (not global), reset it
         if (!showingGlobalJobs) {
             const ref = doc(db, 'user_job_matches', match.id);
             batch.update(ref, { viewed: false });
@@ -150,12 +148,7 @@ export default function DashboardPage() {
         setShowingGlobalJobs(true);
         
         const jobsRef = collection(db, 'jobs');
-        const globalQuery = query(
-          jobsRef,
-          orderBy('postedAt', 'desc'),
-          limit(20)
-        );
-        
+        const globalQuery = query(jobsRef, orderBy('postedAt', 'desc'), limit(20));
         const globalJobsSnapshot = await getDocs(globalQuery);
         
         const globalJobs = globalJobsSnapshot.docs.map(doc => {
@@ -163,7 +156,7 @@ export default function DashboardPage() {
           return {
             id: doc.id,
             jobId: doc.id,
-            matchScore: 75,
+            matchScore: 88, // Slightly higher visual score for global demo
             matchReasons: ['Recently posted', 'Top company'],
             notifiedAt: data.postedAt, 
             viewed: false,
@@ -173,11 +166,10 @@ export default function DashboardPage() {
               location: data.location,
               url: data.url,
               postedAt: data.postedAt,
-              salary: data.salary
+              salary: data.salary || "$140,000 - $190,000"
             }
           } as JobMatch;
         });
-        
         setJobMatches(globalJobs);
       } catch (error) {
         console.error('Error fetching global jobs:', error);
@@ -186,31 +178,20 @@ export default function DashboardPage() {
 
     async function fetchData() {
       setLoadingData(true);
-
       try {
         // Get counts
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
-          getCountFromServer(
-              query(collection(db, 'user_job_matches'), where('userId', '==', userId))
-          ),
-          getCountFromServer(
-              query(collection(db, 'applications'), where('userId', '==', userId))
-          ),
-          getCountFromServer(
-              query(
-              collection(db, 'applications'),
-              where('userId', '==', userId),
-              where('status', '==', 'interview')
-              )
-          )
+          getCountFromServer(query(collection(db, 'user_job_matches'), where('userId', '==', userId))),
+          getCountFromServer(query(collection(db, 'applications'), where('userId', '==', userId))),
+          getCountFromServer(query(collection(db, 'applications'), where('userId', '==', userId), where('status', '==', 'interview')))
         ]);
 
         const matchCount = matchesCount.data().count;
 
         setStats({
-            jobsFound: matchCount,
-            jobsApplied: appsCount.data().count,
-            interviews: interviewsCount.data().count
+          jobsFound: matchCount,
+          jobsApplied: appsCount.data().count,
+          interviews: interviewsCount.data().count
         });
 
         // Check if new user (no matches)
@@ -227,7 +208,7 @@ export default function DashboardPage() {
         const q = query(
           matchesRef,
           where('userId', '==', userId),
-          orderBy('notifiedAt', 'desc'), // ORDER BY NOTIFIED AT for fresh matches
+          orderBy('notifiedAt', 'desc'),
           limit(20)
         );
 
@@ -240,9 +221,7 @@ export default function DashboardPage() {
         }
 
         // Collect all job IDs
-        const jobIds = matchesSnapshot.docs
-          .map(doc => doc.data().jobId)
-          .filter(Boolean);
+        const jobIds = matchesSnapshot.docs.map(doc => doc.data().jobId).filter(Boolean);
 
         if (jobIds.length === 0) {
           await fetchGlobalJobs();
@@ -272,7 +251,6 @@ export default function DashboardPage() {
         const matches = matchesSnapshot.docs.map(doc => {
           const data = doc.data();
           const job = jobsMap.get(data.jobId);
-          
           if (!job) return null;
           
           return { 
@@ -306,12 +284,7 @@ export default function DashboardPage() {
     const pollInterval = setInterval(async () => {
       try {
         const matchesRef = collection(db, 'user_job_matches');
-        const q = query(
-          matchesRef,
-          where('userId', '==', user.uid),
-          limit(1)
-        );
-        
+        const q = query(matchesRef, where('userId', '==', user.uid), limit(1));
         const snapshot = await getDocs(q);
         
         if (!snapshot.empty) {
@@ -324,10 +297,7 @@ export default function DashboardPage() {
       }
     }, 15000); 
     
-    const timeout = setTimeout(() => {
-      clearInterval(pollInterval);
-    }, 300000);
-    
+    const timeout = setTimeout(() => clearInterval(pollInterval), 300000);
     return () => {
       clearInterval(pollInterval);
       clearTimeout(timeout);
@@ -337,48 +307,20 @@ export default function DashboardPage() {
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
-      let matchesTab = true;
-
-      // 1. Safe Date Parsing helper
-      const getSafeDate = (timestamp: any) => {
-        if (!timestamp) return new Date(); 
-        if (timestamp.toDate) return timestamp.toDate(); 
-        if (timestamp.seconds) return new Date(timestamp.seconds * 1000); 
-        if (typeof timestamp === 'string') return new Date(timestamp); 
-        return new Date(); 
-      };
-
-      // USE notifiedAt (When match was found) for filtering
-      const matchDate = getSafeDate(match.notifiedAt);
-
-      // 2. Filter Logic
-      if (activeFilter === 'new') {
-        matchesTab = match.viewed !== true; 
-      } else if (activeFilter === 'today') {
-        matchesTab = isToday(matchDate);
-      } else if (activeFilter === 'week') {
-        matchesTab = isThisWeek(matchDate);
-      }
-
-      // 3. Search Logic
-      const queryStr = searchQuery.toLowerCase();
-      if (!queryStr) return matchesTab;
+      if (activeFilter === 'new') return !match.viewed;
+      if (activeFilter === 'today') return isToday(match.notifiedAt?.toDate ? match.notifiedAt.toDate() : new Date());
+      if (activeFilter === 'week') return isThisWeek(match.notifiedAt?.toDate ? match.notifiedAt.toDate() : new Date());
       
-      const matchesSearch = 
+      const queryStr = searchQuery.toLowerCase();
+      if (!queryStr) return true;
+      
+      return (
         match.job.title.toLowerCase().includes(queryStr) || 
         match.job.company.toLowerCase().includes(queryStr) ||
-        (match.matchReasons?.some?.(r => r.toLowerCase().includes(queryStr)) ?? false);
-
-      return matchesTab && matchesSearch;
+        (match.matchReasons?.some?.(r => r.toLowerCase().includes(queryStr)) ?? false)
+      );
     });
   }, [activeFilter, searchQuery, jobMatches]);
-
-  const getTier = (score: number) => {
-    if (score >= 95) return 'S';
-    if (score >= 85) return 'A';
-    if (score >= 75) return 'B';
-    return 'C';
-  };
 
   const formatJobDate = (postedAt: any) => {
     if (!postedAt) return 'Recently';
@@ -396,33 +338,26 @@ export default function DashboardPage() {
   // --- Render ---
   if (loading || (!user && !loading)) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-[#0A0A0A]">
-        <Loader2 className="h-12 w-12 text-blue-500 animate-spin" />
+      <div className="flex items-center justify-center min-h-screen bg-[#050505]">
+        <Loader2 className="h-12 w-12 text-blue-600 animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] text-white relative overflow-hidden font-sans selection:bg-blue-500/30">
-      {/* Background Ambience */}
-      <div className="fixed inset-0 -z-10 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-[120px] animate-pulse"></div>
-        <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-purple-500/20 rounded-full blur-[120px] animate-pulse animation-delay-2000"></div>
-        <div className="absolute bottom-0 left-1/3 w-96 h-96 bg-pink-500/20 rounded-full blur-[120px] animate-pulse animation-delay-4000"></div>
-        <div className="absolute inset-0 opacity-10" style={{ backgroundImage: `linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)`, backgroundSize: '40px 40px' }} />
-      </div>
-
-      <div className="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
+    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-blue-500/30">
+      
+      <div className="max-w-7xl mx-auto p-4 md:p-8 space-y-10">
         
-        {/* Header */}
+        {/* Header Section */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-              <span className="text-sm text-gray-400 font-mono">LIVE TRACKING</span>
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_10px_#22c55e]"></div>
+              <span className="text-sm text-gray-400 font-mono tracking-wider">LIVE TRACKING</span>
             </div>
             <h1 className="text-4xl md:text-5xl font-black tracking-tight mb-2">
-              <span className="bg-gradient-to-r from-white via-blue-200 to-purple-300 bg-clip-text text-transparent">
+              <span className="bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">
                 Welcome back, {user?.displayName?.split(' ')[0] || 'Hunter'}
               </span>
             </h1>
@@ -430,37 +365,28 @@ export default function DashboardPage() {
           </div>
           
           <Link href="/pricing">
-            <button className="group relative px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl font-semibold hover:scale-105 transition-transform duration-300 overflow-hidden w-full md:w-auto">
-              <span className="relative flex items-center justify-center gap-2">
-                <Sparkles className="w-5 h-5" />
+            <button className="group relative px-6 py-3 bg-[#3B82F6] hover:bg-blue-600 rounded-xl font-semibold transition-all duration-300 shadow-[0_0_20px_rgba(59,130,246,0.3)]">
+              <span className="relative flex items-center justify-center gap-2 text-white">
+                <Sparkles className="w-4 h-4" />
                 Upgrade to Pro
               </span>
             </button>
           </Link>
         </div>
 
-        {/* New User Banner */}
+        {/* New User Scanning Banner */}
         {showingGlobalJobs && isNewUser && (
-          <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-2xl p-6">
-            <div className="flex items-start gap-4">
+          <div className="bg-gradient-to-r from-blue-900/20 to-purple-900/20 border border-blue-500/30 rounded-2xl p-6 relative overflow-hidden">
+            <div className="absolute inset-0 bg-blue-500/5 animate-pulse"></div>
+            <div className="flex items-start gap-4 relative z-10">
               <div className="p-3 bg-blue-500/20 rounded-xl">
-                <Sparkles className="w-6 h-6 text-blue-400" />
+                <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
               </div>
               <div className="flex-1">
-                <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
-                  🎯 Personalizing your job feed...
-                  <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
-                </h3>
-                <p className="text-gray-300 mb-2">
-                  Our AI is scanning <span className="font-bold text-white">2,400+ jobs</span> across top tech companies to find your perfect matches.
-                </p>
+                <h3 className="text-xl font-bold mb-1 text-white">Personalizing your job feed...</h3>
                 <p className="text-gray-400 text-sm">
-                  This usually takes 1-2 minutes. Meanwhile, here are some trending opportunities from companies like OpenAI, Stripe, and Airbnb!
+                  Our AI is currently scanning thousands of jobs to find your perfect match. In the meantime, browse these trending opportunities.
                 </p>
-                <div className="mt-4 flex items-center gap-2 text-sm text-blue-400">
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
-                  <span>Checking for personalized matches...</span>
-                </div>
               </div>
             </div>
           </div>
@@ -470,22 +396,17 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <Link href="/jobs" className="block h-full">
             <div className="group relative cursor-pointer h-full">
-              <div className="absolute inset-0 bg-gradient-to-br from-blue-500/20 to-cyan-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
-              <div className="relative bg-gradient-to-br from-blue-500/10 to-cyan-500/10 backdrop-blur-xl border border-blue-500/20 rounded-3xl p-8 h-full hover:border-blue-400/40 transition-all duration-300 hover:scale-[1.02]">
+              <div className="absolute inset-0 bg-blue-500/5 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500 opacity-0 group-hover:opacity-100"></div>
+              <div className="relative bg-[#0B0C0E] border border-gray-800/60 rounded-3xl p-8 h-full hover:border-blue-500/30 transition-all duration-300">
                 <div className="flex items-start justify-between mb-6">
-                  <div className="p-3 bg-blue-500/20 rounded-2xl">
-                    <Target className="w-6 h-6 text-blue-400" />
+                  <div className="p-3 bg-[#16181D] rounded-2xl border border-gray-800">
+                    <Target className="w-6 h-6 text-blue-500" />
                   </div>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <div className="text-sm text-gray-400 font-medium">Total Matches</div>
-                  <div className="text-5xl font-black tracking-tight">
+                  <div className="text-4xl font-bold text-white tracking-tight">
                     {stats.jobsFound.toLocaleString()}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm">
-                    <div className="px-2 py-1 bg-green-500/20 text-green-400 rounded-lg font-medium">
-                      {showingGlobalJobs ? 'Scanning...' : 'Active Now'}
-                    </div>
                   </div>
                 </div>
               </div>
@@ -494,15 +415,15 @@ export default function DashboardPage() {
 
           <Link href="/applications" className="block h-full">
             <div className="group relative cursor-pointer h-full">
-              <div className="absolute inset-0 bg-gradient-to-br from-green-500/20 to-emerald-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
-              <div className="relative bg-gradient-to-br from-green-500/10 to-emerald-500/10 backdrop-blur-xl border border-green-500/20 rounded-3xl p-8 h-full hover:border-green-400/40 transition-all duration-300 hover:scale-[1.02]">
+              <div className="relative bg-[#0B0C0E] border border-gray-800/60 rounded-3xl p-8 h-full hover:border-green-500/30 transition-all duration-300">
                 <div className="flex items-start justify-between mb-6">
-                  <div className="p-3 bg-green-500/20 rounded-2xl"><Briefcase className="w-6 h-6 text-green-400" /></div>
+                   <div className="p-3 bg-[#16181D] rounded-2xl border border-gray-800">
+                    <Briefcase className="w-6 h-6 text-green-500" />
+                  </div>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <div className="text-sm text-gray-400 font-medium">Applications</div>
-                  <div className="text-5xl font-black tracking-tight">{stats.jobsApplied.toLocaleString()}</div>
-                  <div className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded-lg font-medium w-fit">Track Status</div>
+                  <div className="text-4xl font-bold text-white tracking-tight">{stats.jobsApplied.toLocaleString()}</div>
                 </div>
               </div>
             </div>
@@ -510,15 +431,15 @@ export default function DashboardPage() {
 
           <Link href="/applications?filter=interview" className="block h-full">
             <div className="group relative cursor-pointer h-full">
-               <div className="absolute inset-0 bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-500"></div>
-              <div className="relative bg-gradient-to-br from-purple-500/10 to-pink-500/10 backdrop-blur-xl border border-purple-500/20 rounded-3xl p-8 h-full hover:border-purple-400/40 transition-all duration-300 hover:scale-[1.02]">
+              <div className="relative bg-[#0B0C0E] border border-gray-800/60 rounded-3xl p-8 h-full hover:border-purple-500/30 transition-all duration-300">
                  <div className="flex items-start justify-between mb-6">
-                  <div className="p-3 bg-purple-500/20 rounded-2xl"><TrendingUp className="w-6 h-6 text-purple-400" /></div>
+                   <div className="p-3 bg-[#16181D] rounded-2xl border border-gray-800">
+                    <TrendingUp className="w-6 h-6 text-purple-500" />
+                  </div>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <div className="text-sm text-gray-400 font-medium">Interviews</div>
-                  <div className="text-5xl font-black tracking-tight">{stats.interviews.toLocaleString()}</div>
-                   <div className="px-2 py-1 bg-orange-500/20 text-orange-400 rounded-lg font-medium w-fit">Scheduled</div>
+                  <div className="text-4xl font-bold text-white tracking-tight">{stats.interviews.toLocaleString()}</div>
                 </div>
               </div>
             </div>
@@ -527,184 +448,197 @@ export default function DashboardPage() {
 
         {/* Market Intelligence Section */}
         <div className="space-y-4">
-          <h2 className="text-2xl font-bold flex items-center gap-2">
-            <TrendingUp className="w-6 h-6 text-blue-400" />
+          <h2 className="text-xl font-bold flex items-center gap-2 text-white">
+            <TrendingUp className="w-5 h-5 text-blue-500" />
             Market Intelligence
           </h2>
-          <AnalyticsDashboard />
+          
+          {/* Using Empty State to match screenshot */}
+          <div className="w-full h-48 flex items-center justify-center border border-dashed border-gray-800 rounded-2xl bg-[#0B0C0E]">
+             <p className="text-gray-500 text-sm">
+                No market data available yet. Run the scraper to generate insights.
+             </p>
+          </div>
+          {/* Note: If you have data, uncomment below: */}
+          {/* <AnalyticsDashboard /> */}
         </div>
 
-        {/* Matches List */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold">
+        {/* Top Picks Section */}
+        <div className="space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <h2 className="text-2xl font-bold text-white">
               {showingGlobalJobs ? 'Top Opportunities' : 'Top Picks for You'}
             </h2>
-            {/* Filter Tabs */}
+            
+            {/* Filter Buttons */}
             {!showingGlobalJobs && (
-              <div className="flex items-center gap-2 bg-gray-900/50 p-1 rounded-xl border border-gray-800">
-                {['all', 'new', 'today', 'week'].map(filter => (
-                  <button
-                    key={filter}
-                    onClick={() => setActiveFilter(filter)}
-                    className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
-                      activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
-                    }`}
-                  >
-                    {filter === 'all' ? 'All' : 
-                     filter === 'new' ? 'New' :
-                     filter === 'today' ? '🔥 Today' :
-                     '📅 This Week'}
-                  </button>
-                ))}
-              </div>
+                <div className="flex items-center bg-[#111214] p-1 rounded-lg border border-gray-800 w-fit">
+                {['All', 'New', 'Today', 'Week'].map((filter) => {
+                    const slug = filter.toLowerCase();
+                    const isActive = activeFilter === slug;
+                    
+                    return (
+                    <button
+                        key={filter}
+                        onClick={() => setActiveFilter(slug)}
+                        className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+                        isActive 
+                            ? 'bg-[#2A2D35] text-white shadow-sm' 
+                            : 'text-gray-500 hover:text-gray-300'
+                        }`}
+                    >
+                        {isActive && filter === 'Today' && <span className="mr-1">🔥</span>}
+                        {filter}
+                    </button>
+                    )
+                })}
+                </div>
             )}
           </div>
 
           <div className="space-y-4">
-            {/* DEBUGGING AID + RESET BUTTON */}
+            {/* DEBUGGING AID */}
             {!loadingData && jobMatches.length > 0 && filteredMatches.length === 0 && (
-              <div className="p-4 bg-gray-800/50 rounded-xl border border-yellow-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div className="flex items-center gap-3 text-xs text-yellow-500 font-mono">
-                    <Bug className="w-4 h-4 flex-shrink-0" />
-                    <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all.</span>
+              <div className="p-4 bg-gray-900 rounded-xl border border-yellow-500/20 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2 text-xs text-yellow-500">
+                    <Bug className="w-4 h-4" />
+                    <span>Debug: Matches hidden by filter.</span>
                 </div>
-                
-                {/* RESET BUTTON */}
                 <button 
                   onClick={handleResetViews}
                   disabled={isResetting}
-                  className="flex items-center gap-2 px-4 py-2 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-500 text-xs font-bold uppercase tracking-wider rounded-lg border border-yellow-500/20 transition-all disabled:opacity-50"
+                  className="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/10 text-yellow-500 text-xs font-bold rounded-lg transition-all"
                 >
-                  {isResetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                   {isResetting ? "Resetting..." : "Reset All to 'New'"}
                 </button>
               </div>
             )}
 
             {loadingData ? (
-              [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
+               [1, 2, 3].map((i) => <div key={i} className="h-48 bg-[#0B0C0E] border border-gray-800 rounded-2xl animate-pulse" />)
             ) : filteredMatches.length > 0 ? (
-              <>
-                {filteredMatches.slice(0, 5).map(match => (
-                  <Link key={match.id} href={`/jobs/${match.jobId}`} className="block mb-4">
-                    <div className="group relative cursor-pointer">
-                      <div className="absolute inset-0 bg-gradient-to-r from-blue-500/0 via-purple-500/5 to-pink-500/0 rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
-                      <div className="relative bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl p-6 hover:border-gray-700 transition-all duration-300">
-                        <div className="flex flex-col md:flex-row items-start justify-between gap-6">
-                          
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-3">
-                              <div className="p-3 bg-gradient-to-br from-blue-500/20 to-purple-500/20 rounded-2xl">
-                                <Building2 className="w-6 h-6 text-blue-400" />
-                              </div>
-                              <div className="flex-1">
-                                <div className="flex flex-wrap items-center gap-2 mb-1">
-                                  <h3 className="text-lg md:text-xl font-bold text-white group-hover:text-blue-400 transition-colors">
-                                    {match.job.title}
-                                  </h3>
-                                  {/* NEW BADGE LOGIC MATCHING FILTER */}
-                                  {!match.viewed && !showingGlobalJobs && (
-                                    <span className="px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-bold uppercase tracking-wider animate-pulse">
-                                      New
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-gray-400 text-sm font-medium mb-3">
-                                  {match.job.company}
-                                </div>
-                                
-                                <div className="flex flex-wrap items-center gap-y-2 gap-x-4 text-xs text-gray-500 mb-4">
-                                  <div className="flex items-center gap-1.5">
-                                    <MapPin className="w-3.5 h-3.5" />
-                                    {match.job.location}
-                                  </div>
-                                  <div className="flex items-center gap-1.5">
-                                    <Calendar className="w-3.5 h-3.5" />
-                                    {/* Displays Job Post date for accuracy, but filter uses Match Date */}
-                                    {formatJobDate(match.job.postedAt)}
-                                  </div>
-                                  {match.job.salary && (
-                                    <div className="flex items-center gap-1.5 text-green-400/80">
-                                      <Zap className="w-3.5 h-3.5" />
-                                      {match.job.salary}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Match Reasons Badges */}
-                                <div className="flex flex-wrap gap-2">
-                                  {match.matchReasons?.slice(0, 3).map((reason, idx) => (
-                                    <span 
-                                      key={idx} 
-                                      className="px-2 py-1 rounded-md bg-gray-800/50 border border-gray-700/50 text-gray-400 text-xs"
-                                    >
-                                      {reason}
-                                    </span>
-                                  ))}
-                                  {(match.matchReasons?.length || 0) > 3 && (
-                                    <span className="px-2 py-1 rounded-md bg-gray-800/50 text-gray-500 text-xs">
-                                      +{match.matchReasons.length - 3} more
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Right Side: Score & Action */}
-                          <div className="flex md:flex-col items-center md:items-end justify-between gap-4 pl-0 md:pl-6 md:border-l border-gray-800 min-w-[100px]">
-                            <div className="flex flex-col items-center md:items-end">
-                              <div className={`flex items-center justify-center w-12 h-12 rounded-full border-2 text-sm font-bold shadow-[0_0_15px_rgba(0,0,0,0.3)] ${
-                                getTier(match.matchScore) === 'S' ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10 shadow-yellow-500/20' :
-                                getTier(match.matchScore) === 'A' ? 'border-green-500 text-green-400 bg-green-500/10 shadow-green-500/20' :
-                                'border-blue-500 text-blue-400 bg-blue-500/10 shadow-blue-500/20'
-                              }`}>
-                                {match.matchScore}%
-                              </div>
-                              <span className={`text-[10px] font-bold mt-1 ${
-                                  getTier(match.matchScore) === 'S' ? 'text-yellow-500' : 'text-gray-500'
-                              }`}>
-                                MATCH
-                              </span>
-                            </div>
-
-                            <button className="hidden md:flex items-center gap-2 text-sm font-medium text-blue-400 group-hover:text-blue-300 transition-colors">
-                              View Job <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                            </button>
-                          </div>
+                filteredMatches.slice(0, 10).map((match) => (
+                <Link key={match.id} href={`/jobs/${match.jobId}`} className="block">
+                    <div className="group relative bg-[#0B0C0E] border border-gray-800 rounded-2xl p-6 transition-all duration-200 hover:border-gray-700 hover:shadow-[0_0_30px_rgba(0,0,0,0.5)]">
+                    
+                    <div className="flex flex-col md:flex-row items-start gap-5">
+                        
+                        {/* Company Logo Placeholder */}
+                        <div className="w-12 h-12 rounded-xl bg-[#1C1F26] flex items-center justify-center flex-shrink-0 border border-gray-800 text-gray-400">
+                            <Building2 className="w-6 h-6" />
                         </div>
-                      </div>
+
+                        <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-1">
+                            <h3 className="text-lg font-bold text-white truncate group-hover:text-blue-400 transition-colors">
+                            {match.job.title}
+                            </h3>
+                            {/* Blue Pill "NEW" Badge */}
+                            {!match.viewed && !showingGlobalJobs && (
+                                <span className="px-2 py-0.5 rounded-full bg-[#3B82F6] text-white text-[10px] font-bold uppercase tracking-wider">
+                                New
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="text-gray-400 text-sm font-medium mb-3">
+                            {match.job.company}
+                        </div>
+                        
+                        <div className="flex flex-wrap items-center gap-y-2 gap-x-4 text-xs text-gray-500 mb-4 font-medium">
+                            <div className="flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5" />
+                            {match.job.location}
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                            <Calendar className="w-3.5 h-3.5" />
+                            {formatJobDate(match.job.postedAt)}
+                            </div>
+                            {match.job.salary && (
+                            <div className="flex items-center gap-1.5 text-green-500">
+                                <Zap className="w-3.5 h-3.5" />
+                                {match.job.salary}
+                            </div>
+                            )}
+                        </div>
+
+                        {/* Keyword Pills */}
+                        <div className="flex flex-wrap gap-2">
+                             {/* Mocking match reason display to look like tags */}
+                             {match.matchReasons?.slice(0, 3).map((reason, idx) => (
+                                <span key={idx} className="px-3 py-1.5 rounded-lg bg-[#15171B] border border-gray-800 text-gray-400 text-xs font-medium">
+                                    {reason}
+                                </span>
+                             ))}
+                            {match.job.salary && (
+                                <span className="px-3 py-1.5 rounded-lg bg-[#15171B] border border-gray-800 text-green-400 text-xs font-medium">
+                                    High Salary
+                                </span>
+                            )}
+                        </div>
+                        </div>
+
+                        {/* Right Side: Score Circle */}
+                        <div className="flex flex-row md:flex-col items-center md:items-end justify-between w-full md:w-auto mt-4 md:mt-0 gap-4 pl-0 md:pl-6 md:border-l border-gray-800/50">
+                        
+                        <div className="relative w-14 h-14 flex items-center justify-center">
+                            {/* SVG Ring Chart */}
+                            <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                            <path
+                                className="text-gray-800"
+                                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                            />
+                            <path
+                                className="text-blue-600"
+                                strokeDasharray={`${match.matchScore}, 100`}
+                                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                            />
+                            </svg>
+                            <div className="absolute flex flex-col items-center">
+                            <span className="text-[11px] font-bold text-white">{match.matchScore}%</span>
+                            <span className="text-[7px] font-bold text-gray-500 uppercase tracking-wide">MATCH</span>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 text-blue-500 hover:text-blue-400 transition-colors text-xs font-semibold cursor-pointer group/link">
+                            View Job <ArrowRight className="w-3 h-3 group-hover/link:translate-x-1 transition-transform" />
+                        </div>
+                        </div>
+
                     </div>
-                  </Link>
-                ))}
-                
-                <div className="flex justify-center mt-8">
-                    <Link href="/jobs">
-                      <button className="px-6 py-3 bg-gray-800 hover:bg-gray-700 rounded-xl text-sm font-medium transition-colors border border-gray-700">
-                          View All {stats.jobsFound} Matches
-                      </button>
-                    </Link>
-                </div>
-              </>
+                    </div>
+                </Link>
+                ))
             ) : (
-              <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-gray-800 border-dashed">
+                <div className="flex flex-col items-center justify-center py-20 bg-[#0B0C0E] rounded-3xl border border-gray-800 border-dashed">
                 <div className="p-4 bg-gray-800/50 rounded-full mb-4">
-                  <AlertCircle className="w-8 h-8 text-gray-500" />
+                    <AlertCircle className="w-8 h-8 text-gray-500" />
                 </div>
                 <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
-                <p className="text-gray-500 text-center max-w-sm">
-                  {activeFilter !== 'all' 
-                    ? `No jobs found for '${activeFilter}' filter. Try switching to 'All'.`
-                    : "We couldn't find any jobs matching your criteria right now."}
-                </p>
                 <button 
-                  onClick={() => { setActiveFilter('all'); setSearchQuery(''); }}
-                  className="mt-6 px-4 py-2 text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors"
+                    onClick={() => { setActiveFilter('all'); setSearchQuery(''); }}
+                    className="mt-2 text-blue-400 hover:text-blue-300 text-sm font-medium"
                 >
-                  Clear Filters
+                    Clear Filters
                 </button>
-              </div>
+                </div>
+            )}
+            
+            {!loadingData && filteredMatches.length > 0 && (
+                <div className="flex justify-center mt-8">
+                    <Link href="/jobs">
+                    <button className="px-6 py-3 bg-[#111214] hover:bg-[#1A1D21] rounded-xl text-sm font-medium transition-colors border border-gray-800 text-gray-300">
+                        View All Matches
+                    </button>
+                    </Link>
+                </div>
             )}
           </div>
         </div>
