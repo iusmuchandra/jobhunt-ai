@@ -14,7 +14,7 @@ import {
   documentId,
   writeBatch,
   doc,
-  getDoc // Added getDoc import
+  getDoc 
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -45,7 +45,6 @@ interface JobMatch {
   job: {
     title: string;
     company: string;
-    companyLogo?: string;
     location: string;
     url: string;
     postedAt: any;
@@ -68,6 +67,7 @@ export default function DashboardPage() {
   
   // Real Data State
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
+  const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]); // <--- NEW STATE FOR NEGATIVE FILTERS
   const [stats, setStats] = useState<UserStats>({
     jobsFound: 0,
     jobsApplied: 0,
@@ -193,8 +193,18 @@ export default function DashboardPage() {
         const userProfileRef = doc(db, 'users', userId);
         const userProfileSnap = await getDoc(userProfileRef);
         const userData = userProfileSnap.exists() ? userProfileSnap.data() : null;
-        // Check if user has job titles set (e.g. "Product Manager")
+        
+        // A. Check for Positive Keywords (e.g. Product Manager)
         const hasPreferences = userData?.jobTitles && userData.jobTitles.length > 0;
+
+        // B. Check for Negative/Excluded Keywords (e.g. "engineer")
+        // NOTE: Make sure the field name matches your Firebase database! 
+        // I used 'excludedKeywords' here based on your description.
+        if (userData?.excludedKeywords && Array.isArray(userData.excludedKeywords)) {
+           setExcludedKeywords(userData.excludedKeywords);
+        } else if (userData?.negativeFilters && Array.isArray(userData.negativeFilters)) {
+           setExcludedKeywords(userData.negativeFilters);
+        }
 
         // 2. Get Counts
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
@@ -226,7 +236,6 @@ export default function DashboardPage() {
           
           if (hasPreferences) {
             // Case A: User has preferences (e.g. Product Manager), but AI is still working.
-            // Do NOT show global jobs. Show "Scanning" UI.
             console.log('⏳ Preferences found, waiting for AI matches...');
             setJobMatches([]); 
             setShowingGlobalJobs(false); 
@@ -249,19 +258,17 @@ export default function DashboardPage() {
           matchesRef,
           where('userId', '==', userId),
           orderBy('notifiedAt', 'desc'), 
-          limit(20)
+          limit(50) // Increased limit to ensure we have matches left after filtering
         );
 
         const matchesSnapshot = await getDocs(q);
         
         if (matchesSnapshot.empty) {
-            // Safety fallback, though usually caught by matchCount check
             if (!hasPreferences) await fetchGlobalJobs();
             setLoadingData(false);
             return;
         }
 
-        // Collect all job IDs
         const jobIds = matchesSnapshot.docs
           .map(doc => doc.data().jobId)
           .filter(Boolean);
@@ -322,19 +329,12 @@ export default function DashboardPage() {
   }, [user]);
 
   // --- Poll for personalized matches ---
-  // Modified to poll if we have 0 matches but ARE NOT showing global jobs (The "Scanning" state)
   useEffect(() => {
     if (!user) return;
-    
-    // We poll if: 
-    // 1. Showing Global Jobs (New user without preferences)
-    // 2. OR Matches are empty and we aren't showing global (New user WITH preferences)
     const shouldPoll = showingGlobalJobs || (jobMatches.length === 0 && !loadingData);
 
     if (!shouldPoll) return;
     
-    console.log("📡 Polling for new matches...");
-
     const pollInterval = setInterval(async () => {
       try {
         const matchesRef = collection(db, 'user_job_matches');
@@ -354,11 +354,11 @@ export default function DashboardPage() {
       } catch (error) {
         console.error('Error polling for matches:', error);
       }
-    }, 10000); // Poll every 10s
+    }, 10000); 
     
     const timeout = setTimeout(() => {
       clearInterval(pollInterval);
-    }, 300000); // Stop after 5 mins
+    }, 300000); 
     
     return () => {
       clearInterval(pollInterval);
@@ -366,12 +366,20 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, jobMatches.length, loadingData, user]);
 
-  // --- Filtering Logic ---
+  // --- Filtering Logic (UPDATED FOR EXCLUSIONS) ---
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
+      // 1. Negative Filter Check (Exclusions)
+      // If the job title contains any excluded word, HIDE IT immediately.
+      if (excludedKeywords.length > 0) {
+        const title = match.job.title.toLowerCase();
+        const isExcluded = excludedKeywords.some(keyword => title.includes(keyword.toLowerCase()));
+        
+        if (isExcluded) return false; // Skip this job
+      }
+
       let matchesTab = true;
 
-      // 1. Safe Date Parsing helper
       const getSafeDate = (timestamp: any) => {
         if (!timestamp) return new Date(); 
         if (timestamp.toDate) return timestamp.toDate(); 
@@ -400,7 +408,7 @@ export default function DashboardPage() {
 
       return matchesTab && matchesSearch;
     });
-  }, [activeFilter, searchQuery, jobMatches]);
+  }, [activeFilter, searchQuery, jobMatches, excludedKeywords]); // Added excludedKeywords dependency
 
   const getTier = (score: number) => {
     if (score >= 95) return 'S';
@@ -433,7 +441,6 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white relative overflow-hidden font-sans selection:bg-blue-500/30">
-      {/* Background Ambience */}
       <div className="fixed inset-0 -z-10 pointer-events-none">
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-[120px] animate-pulse"></div>
         <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-purple-500/20 rounded-full blur-[120px] animate-pulse animation-delay-2000"></div>
@@ -468,7 +475,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* New User Banner (Only for Global Fallback) */}
+        {/* New User Banner */}
         {showingGlobalJobs && isNewUser && (
           <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-2xl p-6">
             <div className="flex items-start gap-4">
@@ -589,7 +596,7 @@ export default function DashboardPage() {
               <div className="p-4 bg-gray-800/50 rounded-xl border border-yellow-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="flex items-center gap-3 text-xs text-yellow-500 font-mono">
                     <Bug className="w-4 h-4 flex-shrink-0" />
-                    <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all.</span>
+                    <span>Debug: Loaded matches, but filters (including exclusions) hid them all.</span>
                 </div>
                 
                 <button 
@@ -608,7 +615,7 @@ export default function DashboardPage() {
               // 1. Loading Skeleton
               [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
             ) : (!loadingData && jobMatches.length === 0 && !showingGlobalJobs) ? (
-              // 2. SCANNING STATE (Matches are 0, User has preferences, Global is OFF)
+              // 2. SCANNING STATE
               <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-blue-500/30 border-dashed animate-pulse">
                 <div className="p-4 bg-blue-500/20 rounded-full mb-4">
                   <Loader2 className="w-10 h-10 text-blue-400 animate-spin" />
@@ -721,16 +728,18 @@ export default function DashboardPage() {
                 </div>
               </>
             ) : (
-              // 4. EMPTY STATE (User has matches, but filtered them all out)
+              // 4. EMPTY STATE 
               <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-gray-800 border-dashed">
                 <div className="p-4 bg-gray-800/50 rounded-full mb-4">
                   <AlertCircle className="w-8 h-8 text-gray-500" />
                 </div>
                 <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
                 <p className="text-gray-500 text-center max-w-sm">
-                  {activeFilter !== 'all' 
-                    ? `No jobs found for '${activeFilter}' filter. Try switching to 'All'.`
-                    : "We couldn't find any jobs matching your criteria right now."}
+                  {excludedKeywords.length > 0 && filteredMatches.length === 0 && jobMatches.length > 0 
+                   ? `Hidden ${jobMatches.length - filteredMatches.length} jobs matching your exclusions (e.g. "${excludedKeywords[0]}")`
+                   : activeFilter !== 'all' 
+                     ? `No jobs found for '${activeFilter}' filter. Try switching to 'All'.`
+                     : "We couldn't find any jobs matching your criteria right now."}
                 </p>
                 <button 
                   onClick={() => { setActiveFilter('all'); setSearchQuery(''); }}
