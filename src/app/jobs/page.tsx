@@ -131,7 +131,7 @@ export default function JobsPage() {
   const [hasMore, setHasMore] = useState(true);
   const [cursors, setCursors] = useState<QueryDocumentSnapshot<DocumentData>[]>([]);
   
-  // --- UPDATED: JOBS PER PAGE ---
+  // --- JOBS PER PAGE ---
   const JOBS_PER_PAGE = 50;
 
   // UI State
@@ -315,10 +315,16 @@ export default function JobsPage() {
     }
   };
 
-  // --- Filter Logic (Enhanced) ---
+  // --- Filter Logic (Enhanced with Time Filtering) ---
   const filteredJobs = jobs.filter(job => {
     if (!profileLoaded && negativeFilters.length === 0) return false;
     
+    // Time Calculations
+    const now = new Date();
+    const jobDate = job.postedAt?.seconds ? new Date(job.postedAt.seconds * 1000) : new Date();
+    const diffTime = Math.abs(now.getTime() - jobDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
     // 1. Negative Filter
     if (negativeFilters.length > 0) {
       const titleLower = job.title.toLowerCase();
@@ -338,8 +344,11 @@ export default function JobsPage() {
     // 3. Company Filter
     const matchesCompany = companyFilter === 'all' || job.company === companyFilter;
 
-    // 4. Status Filter
-    const matchesStatus = statusFilter === 'all' || (statusFilter === 'new' && !job.viewed);
+    // 4. Status Filter (Includes Today/Week logic)
+    const matchesStatus = statusFilter === 'all' || 
+      (statusFilter === 'new' && !job.viewed) ||
+      (statusFilter === 'today' && diffDays <= 1) ||
+      (statusFilter === 'week' && diffDays <= 7);
 
     // 5. Remote/Location
     const jobLocation = (job.location || '').toLowerCase();
@@ -456,7 +465,8 @@ export default function JobsPage() {
                     icon: Sparkles, 
                     val: statusFilter, 
                     set: setStatusFilter, 
-                    opts: [['all', 'All Status'], ['new', '✨ New Matches Only']] 
+                    // UPDATED OPTIONS
+                    opts: [['all', 'All Status'], ['new', '✨ New Matches Only'], ['today', '🔥 Posted Today'], ['week', '📅 This Week']] 
                   },
                   { 
                     icon: Building2, 
@@ -536,7 +546,7 @@ export default function JobsPage() {
                   )}
                 </div>
 
-                {/* --- UPDATED: TOP PAGINATION --- */}
+                {/* --- TOP PAGINATION --- */}
                 <div className="flex items-center gap-3">
                   <button onClick={handlePrevPage} disabled={page <= 1 || loading} className="px-3 py-1.5 bg-gray-900 border border-gray-800 rounded-lg text-xs font-bold disabled:opacity-30 hover:bg-gray-800 transition-colors">Prev</button>
                   <div className="text-gray-500 font-mono text-xs">Page <span className="text-white">{page}</span></div>
@@ -604,6 +614,14 @@ export default function JobsPage() {
                                   <DollarSign className="w-3 h-3" /> {job.salary}
                                 </span>
                               )}
+
+                              {/* NEW: Freshness Badge */}
+                              {job.postedAt?.seconds && (Date.now() - job.postedAt.seconds * 1000) < (24 * 60 * 60 * 1000) && (
+                                <span className="px-2 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 animate-pulse">
+                                  🔥 Fresh
+                                </span>
+                              )}
+
                               {job.tags?.slice(0, 4).map((tag, idx) => (
                                 <span key={idx} className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-gray-300 border border-white/5 rounded-lg text-xs transition-colors">
                                   {tag}

@@ -31,7 +31,8 @@ import {
   AlertCircle
 } from 'lucide-react';
 import Link from 'next/link';
-import { formatDistanceToNow } from 'date-fns';
+// Added isToday and isThisWeek for the new filters
+import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
 
 // --- Interfaces ---
 interface JobMatch {
@@ -360,7 +361,24 @@ export default function DashboardPage() {
   const filteredMatches = useMemo(() => {
     return jobMatches.filter(match => {
       let matchesTab = true;
-      if (activeFilter === 'new') matchesTab = !match.viewed;
+
+      // Helper to extract a standard Date object from Firestore Timestamp or other formats
+      const getJobDate = (postedAt: any) => {
+        if (!postedAt) return new Date();
+        if (postedAt.toDate) return postedAt.toDate(); // Firestore Timestamp
+        if (postedAt.seconds) return new Date(postedAt.seconds * 1000); // Seconds timestamp
+        return new Date(postedAt); // Standard JS Date or ISO string
+      };
+
+      const jobDate = getJobDate(match.job.postedAt);
+
+      if (activeFilter === 'new') {
+        matchesTab = !match.viewed;
+      } else if (activeFilter === 'today') {
+        matchesTab = isToday(jobDate);
+      } else if (activeFilter === 'week') {
+        matchesTab = isThisWeek(jobDate);
+      }
 
       const queryStr = searchQuery.toLowerCase();
       if (!queryStr) return matchesTab;
@@ -547,7 +565,7 @@ export default function DashboardPage() {
             {/* Filter Tabs */}
             {!showingGlobalJobs && (
               <div className="flex items-center gap-2 bg-gray-900/50 p-1 rounded-xl border border-gray-800">
-                {['all', 'new'].map(filter => (
+                {['all', 'new', 'today', 'week'].map(filter => (
                   <button
                     key={filter}
                     onClick={() => setActiveFilter(filter)}
@@ -555,7 +573,10 @@ export default function DashboardPage() {
                       activeFilter === filter ? 'bg-gray-700 text-white shadow-lg' : 'text-gray-400 hover:text-white'
                     }`}
                   >
-                    {filter === 'all' ? 'All' : 'New'}
+                    {filter === 'all' ? 'All' : 
+                     filter === 'new' ? 'New' :
+                     filter === 'today' ? '🔥 Today' :
+                     '📅 This Week'}
                   </button>
                 ))}
               </div>

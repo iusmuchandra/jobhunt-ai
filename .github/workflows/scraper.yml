@@ -2,8 +2,8 @@ name: Job Hunt AI Scraper
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
-  workflow_dispatch:       # Manual trigger enabled
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
     inputs:
       reason:
         description: 'Trigger reason'
@@ -19,7 +19,8 @@ jobs:
     timeout-minutes: 30
     
     env:
-      FIREBASE_CREDENTIALS_PATH: 'python-service/serviceAccountKey.json'
+      # We are creating the key in the scripts folder, so we just need the filename
+      FIREBASE_CREDENTIALS_PATH: 'serviceAccountKey.json' 
       MAX_CONCURRENCY: 15
       REQUEST_TIMEOUT: 30
       JOB_EXPIRATION_DAYS: 30
@@ -39,13 +40,13 @@ jobs:
       
       - name: Install dependencies
         run: |
-          cd python-service
+          cd scripts  # <--- CHANGED FROM python-service
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
       - name: Create Service Account Key
         run: |
-          cd python-service
+          cd scripts  # <--- CHANGED FROM python-service
           echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}' > serviceAccountKey.json
       
       - name: Run Job Scraper
@@ -53,18 +54,15 @@ jobs:
           TRIGGER_REASON: ${{ github.event.inputs.reason || 'Scheduled run' }}
           TARGET_USER: ${{ github.event.inputs.user_email }}
         run: |
-          cd python-service
+          cd scripts  # <--- CHANGED FROM python-service
           echo "🚀 Starting scraper..."
           echo "📋 Reason: $TRIGGER_REASON"
-          if [ -n "$TARGET_USER" ]; then
-            echo "🎯 Target user: $TARGET_USER"
-          fi
           python job_scraper.py
       
       - name: Cleanup
         if: always()
         run: |
-          cd python-service
+          cd scripts  # <--- CHANGED FROM python-service
           rm -f serviceAccountKey.json
       
       - name: Notify on failure
@@ -75,14 +73,8 @@ jobs:
           server_port: 587
           username: ${{ secrets.SENDER_EMAIL }}
           password: ${{ secrets.SENDER_PASSWORD }}
-          # FIX BELOW: Changed outer quotes to double " and inner to single '
-          subject: "🚨 Job Scraper Failed - ${{ github.event.inputs.reason || 'Scheduled' }}"
-          to: ${{ secrets.ADMIN_EMAIL }}
+          subject: "🚨 Job Scraper Failed"
+          to: ${{ secrets.ADMIN_EMAIL }}  # <--- Make sure this Secret exists!
           from: JobHunt AI
           body: |
-            The scraper failed during: ${{ github.event.inputs.reason || 'scheduled run' }}
-            
-            Trigger: ${{ github.event_name }}
-            Target User: ${{ github.event.inputs.user_email || 'All users' }}
-            
-            View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            The scraper failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
