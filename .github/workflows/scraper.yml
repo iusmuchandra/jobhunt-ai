@@ -75,7 +75,8 @@ jobs:
           server_port: 587
           username: ${{ secrets.SENDER_EMAIL }}
           password: ${{ secrets.SENDER_PASSWORD }}
-          subject: '🚨 Job Scraper Failed - ${{ github.event.inputs.reason || "Scheduled" }}'
+          # FIX BELOW: Changed outer quotes to double " and inner to single '
+          subject: "🚨 Job Scraper Failed - ${{ github.event.inputs.reason || 'Scheduled' }}"
           to: ${{ secrets.ADMIN_EMAIL }}
           from: JobHunt AI
           body: |
