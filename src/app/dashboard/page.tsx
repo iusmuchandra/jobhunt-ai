@@ -13,7 +13,8 @@ import {
   getCountFromServer, 
   documentId,
   writeBatch,
-  doc
+  doc,
+  getDoc // Added getDoc import
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -44,6 +45,7 @@ interface JobMatch {
   job: {
     title: string;
     company: string;
+    companyLogo?: string;
     location: string;
     url: string;
     postedAt: any;
@@ -75,7 +77,7 @@ export default function DashboardPage() {
   const [loadingData, setLoadingData] = useState(true);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
-  const [isResetting, setIsResetting] = useState(false); // State for reset button
+  const [isResetting, setIsResetting] = useState(false); 
   
   const hasTriggeredScraper = useRef(false);
 
@@ -123,7 +125,6 @@ export default function DashboardPage() {
       const batch = writeBatch(db);
       
       jobMatches.forEach(match => {
-        // If it's a real user match (not global), reset it
         if (!showingGlobalJobs) {
             const ref = doc(db, 'user_job_matches', match.id);
             batch.update(ref, { viewed: false });
@@ -188,7 +189,14 @@ export default function DashboardPage() {
       setLoadingData(true);
 
       try {
-        // Get counts
+        // 1. Check User Preferences FIRST
+        const userProfileRef = doc(db, 'users', userId);
+        const userProfileSnap = await getDoc(userProfileRef);
+        const userData = userProfileSnap.exists() ? userProfileSnap.data() : null;
+        // Check if user has job titles set (e.g. "Product Manager")
+        const hasPreferences = userData?.jobTitles && userData.jobTitles.length > 0;
+
+        // 2. Get Counts
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
           getCountFromServer(
               query(collection(db, 'user_job_matches'), where('userId', '==', userId))
@@ -213,30 +221,44 @@ export default function DashboardPage() {
             interviews: interviewsCount.data().count
         });
 
-        // Check if new user (no matches)
+        // 3. Logic Split: New User Handling
         if (matchCount === 0) {
-          setIsNewUser(true);
-          triggerScraperForNewUser(user?.email || null);
-          await fetchGlobalJobs();
+          
+          if (hasPreferences) {
+            // Case A: User has preferences (e.g. Product Manager), but AI is still working.
+            // Do NOT show global jobs. Show "Scanning" UI.
+            console.log('⏳ Preferences found, waiting for AI matches...');
+            setJobMatches([]); 
+            setShowingGlobalJobs(false); 
+            triggerScraperForNewUser(user?.email || null);
+          } else {
+            // Case B: Brand new user with NO preferences. Show Global Jobs as fallback.
+            console.log('🆕 No preferences found, showing global fallback');
+            setIsNewUser(true);
+            triggerScraperForNewUser(user?.email || null);
+            await fetchGlobalJobs();
+          }
+
           setLoadingData(false);
           return;
         }
 
-        // Fetch user-specific matches
+        // 4. Fetch User-Specific Matches (Standard Flow)
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
           where('userId', '==', userId),
-          orderBy('notifiedAt', 'desc'), // ORDER BY NOTIFIED AT for fresh matches
+          orderBy('notifiedAt', 'desc'), 
           limit(20)
         );
 
         const matchesSnapshot = await getDocs(q);
         
         if (matchesSnapshot.empty) {
-          await fetchGlobalJobs();
-          setLoadingData(false);
-          return;
+            // Safety fallback, though usually caught by matchCount check
+            if (!hasPreferences) await fetchGlobalJobs();
+            setLoadingData(false);
+            return;
         }
 
         // Collect all job IDs
@@ -245,9 +267,9 @@ export default function DashboardPage() {
           .filter(Boolean);
 
         if (jobIds.length === 0) {
-          await fetchGlobalJobs();
-          setLoadingData(false);
-          return;
+           if (!hasPreferences) await fetchGlobalJobs();
+           setLoadingData(false);
+           return;
         }
 
         // Fetch jobs (Chunking logic)
@@ -299,10 +321,20 @@ export default function DashboardPage() {
     fetchData();
   }, [user]);
 
-  // --- Poll for personalized matches (for new users) ---
+  // --- Poll for personalized matches ---
+  // Modified to poll if we have 0 matches but ARE NOT showing global jobs (The "Scanning" state)
   useEffect(() => {
-    if (!showingGlobalJobs || !isNewUser || !user) return;
+    if (!user) return;
     
+    // We poll if: 
+    // 1. Showing Global Jobs (New user without preferences)
+    // 2. OR Matches are empty and we aren't showing global (New user WITH preferences)
+    const shouldPoll = showingGlobalJobs || (jobMatches.length === 0 && !loadingData);
+
+    if (!shouldPoll) return;
+    
+    console.log("📡 Polling for new matches...");
+
     const pollInterval = setInterval(async () => {
       try {
         const matchesRef = collection(db, 'user_job_matches');
@@ -315,24 +347,24 @@ export default function DashboardPage() {
         const snapshot = await getDocs(q);
         
         if (!snapshot.empty) {
-          console.log('✨ Personalized matches are ready!');
+          console.log('✨ Personalized matches are ready! Reloading...');
           window.location.reload();
           clearInterval(pollInterval);
         }
       } catch (error) {
         console.error('Error polling for matches:', error);
       }
-    }, 15000); 
+    }, 10000); // Poll every 10s
     
     const timeout = setTimeout(() => {
       clearInterval(pollInterval);
-    }, 300000);
+    }, 300000); // Stop after 5 mins
     
     return () => {
       clearInterval(pollInterval);
       clearTimeout(timeout);
     };
-  }, [showingGlobalJobs, isNewUser, user]);
+  }, [showingGlobalJobs, jobMatches.length, loadingData, user]);
 
   // --- Filtering Logic ---
   const filteredMatches = useMemo(() => {
@@ -348,10 +380,8 @@ export default function DashboardPage() {
         return new Date(); 
       };
 
-      // USE notifiedAt (When match was found) for filtering
       const matchDate = getSafeDate(match.notifiedAt);
 
-      // 2. Filter Logic
       if (activeFilter === 'new') {
         matchesTab = match.viewed !== true; 
       } else if (activeFilter === 'today') {
@@ -360,7 +390,6 @@ export default function DashboardPage() {
         matchesTab = isThisWeek(matchDate);
       }
 
-      // 3. Search Logic
       const queryStr = searchQuery.toLowerCase();
       if (!queryStr) return matchesTab;
       
@@ -439,7 +468,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* New User Banner */}
+        {/* New User Banner (Only for Global Fallback) */}
         {showingGlobalJobs && isNewUser && (
           <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-2xl p-6">
             <div className="flex items-start gap-4">
@@ -448,19 +477,12 @@ export default function DashboardPage() {
               </div>
               <div className="flex-1">
                 <h3 className="text-xl font-bold mb-2 flex items-center gap-2">
-                  🎯 Personalizing your job feed...
+                  🎯 Setting up your feed...
                   <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
                 </h3>
                 <p className="text-gray-300 mb-2">
-                  Our AI is scanning <span className="font-bold text-white">2,400+ jobs</span> across top tech companies to find your perfect matches.
+                  We are scanning jobs for you. In the meantime, check out these trending roles!
                 </p>
-                <p className="text-gray-400 text-sm">
-                  This usually takes 1-2 minutes. Meanwhile, here are some trending opportunities from companies like OpenAI, Stripe, and Airbnb!
-                </p>
-                <div className="mt-4 flex items-center gap-2 text-sm text-blue-400">
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
-                  <span>Checking for personalized matches...</span>
-                </div>
               </div>
             </div>
           </div>
@@ -540,8 +562,8 @@ export default function DashboardPage() {
             <h2 className="text-2xl font-bold">
               {showingGlobalJobs ? 'Top Opportunities' : 'Top Picks for You'}
             </h2>
-            {/* Filter Tabs */}
-            {!showingGlobalJobs && (
+            {/* Filter Tabs - Hide if global */}
+            {!showingGlobalJobs && jobMatches.length > 0 && (
               <div className="flex items-center gap-2 bg-gray-900/50 p-1 rounded-xl border border-gray-800">
                 {['all', 'new', 'today', 'week'].map(filter => (
                   <button
@@ -563,14 +585,13 @@ export default function DashboardPage() {
 
           <div className="space-y-4">
             {/* DEBUGGING AID + RESET BUTTON */}
-            {!loadingData && jobMatches.length > 0 && filteredMatches.length === 0 && (
+            {!loadingData && jobMatches.length > 0 && filteredMatches.length === 0 && !showingGlobalJobs && (
               <div className="p-4 bg-gray-800/50 rounded-xl border border-yellow-500/20 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="flex items-center gap-3 text-xs text-yellow-500 font-mono">
                     <Bug className="w-4 h-4 flex-shrink-0" />
                     <span>Debug: Loaded {jobMatches.length} total matches, but filter '{activeFilter}' hid them all.</span>
                 </div>
                 
-                {/* RESET BUTTON */}
                 <button 
                   onClick={handleResetViews}
                   disabled={isResetting}
@@ -582,9 +603,25 @@ export default function DashboardPage() {
               </div>
             )}
 
+            {/* RENDER LOGIC */}
             {loadingData ? (
+              // 1. Loading Skeleton
               [1, 2, 3].map((i) => <div key={i} className="h-40 bg-gray-900/50 backdrop-blur-xl border border-gray-800 rounded-3xl animate-pulse" />)
+            ) : (!loadingData && jobMatches.length === 0 && !showingGlobalJobs) ? (
+              // 2. SCANNING STATE (Matches are 0, User has preferences, Global is OFF)
+              <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-blue-500/30 border-dashed animate-pulse">
+                <div className="p-4 bg-blue-500/20 rounded-full mb-4">
+                  <Loader2 className="w-10 h-10 text-blue-400 animate-spin" />
+                </div>
+                <h3 className="text-xl font-bold text-white mb-2">Finding your roles...</h3>
+                <p className="text-gray-400 text-center max-w-md">
+                  We are actively scanning for jobs matching your preferences.
+                  <br />
+                  This typically takes 1-2 minutes.
+                </p>
+              </div>
             ) : filteredMatches.length > 0 ? (
+              // 3. MATCHES FOUND
               <>
                 {filteredMatches.slice(0, 5).map(match => (
                   <Link key={match.id} href={`/jobs/${match.jobId}`} className="block mb-4">
@@ -603,7 +640,6 @@ export default function DashboardPage() {
                                   <h3 className="text-lg md:text-xl font-bold text-white group-hover:text-blue-400 transition-colors">
                                     {match.job.title}
                                   </h3>
-                                  {/* NEW BADGE LOGIC MATCHING FILTER */}
                                   {!match.viewed && !showingGlobalJobs && (
                                     <span className="px-2 py-0.5 rounded-full bg-blue-500 text-white text-[10px] font-bold uppercase tracking-wider animate-pulse">
                                       New
@@ -621,7 +657,6 @@ export default function DashboardPage() {
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     <Calendar className="w-3.5 h-3.5" />
-                                    {/* Displays Job Post date for accuracy, but filter uses Match Date */}
                                     {formatJobDate(match.job.postedAt)}
                                   </div>
                                   {match.job.salary && (
@@ -632,7 +667,6 @@ export default function DashboardPage() {
                                   )}
                                 </div>
 
-                                {/* Match Reasons Badges */}
                                 <div className="flex flex-wrap gap-2">
                                   {match.matchReasons?.slice(0, 3).map((reason, idx) => (
                                     <span 
@@ -652,7 +686,6 @@ export default function DashboardPage() {
                             </div>
                           </div>
 
-                          {/* Right Side: Score & Action */}
                           <div className="flex md:flex-col items-center md:items-end justify-between gap-4 pl-0 md:pl-6 md:border-l border-gray-800 min-w-[100px]">
                             <div className="flex flex-col items-center md:items-end">
                               <div className={`flex items-center justify-center w-12 h-12 rounded-full border-2 text-sm font-bold shadow-[0_0_15px_rgba(0,0,0,0.3)] ${
@@ -688,6 +721,7 @@ export default function DashboardPage() {
                 </div>
               </>
             ) : (
+              // 4. EMPTY STATE (User has matches, but filtered them all out)
               <div className="flex flex-col items-center justify-center py-20 bg-gray-900/30 rounded-3xl border border-gray-800 border-dashed">
                 <div className="p-4 bg-gray-800/50 rounded-full mb-4">
                   <AlertCircle className="w-8 h-8 text-gray-500" />
