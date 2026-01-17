@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-   JOBHUNT AI - ENTERPRISE PRODUCTION ENGINE V3.2 (FULLY FIXED)
+   JOBHUNT AI - ENTERPRISE PRODUCTION ENGINE V3.2 (FULLY FIXED & INTEGRATED)
+   - INTEGRATED: Enhanced Salary Extraction
+   - INTEGRATED: Complete Target List
    - FIXED: Strict USA location filtering
    - FIXED: Enhanced negative keyword detection
    - FIXED: Company ID corrections to eliminate 404 errors
@@ -27,6 +29,10 @@ from collections import defaultdict
 import random
 from pathlib import Path
 from difflib import SequenceMatcher
+
+# --- NEW IMPORTS FOR INTEGRATION ---
+from salary_extractor import EnhancedSalaryExtractor, extract_salary_from_job
+from complete_targets_list import COMPLETE_TARGETS
 
 # --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
@@ -119,7 +125,7 @@ class Config:
     
     # Batch processing
     FIREBASE_BATCH_SIZE = 500
-    MAX_JOBS_PER_COMPANY = 200
+    MAX_JOBS_PER_COMPANY = 1000
     
     # Content limits
     MAX_DESCRIPTION_LENGTH = 2000
@@ -199,127 +205,8 @@ class CompanyValidator:
 #                            TARGET COMPANIES
 # ===========================================================================
 
-TARGETS = [
-    # --- TIER 1: THE GIANTS ---
-    {"name": "Airbnb", "ats": "greenhouse", "id": "airbnb", "priority": 1},
-    {"name": "Stripe", "ats": "greenhouse", "id": "stripe", "priority": 1},
-    {"name": "Uber", "ats": "greenhouse", "id": "uberats", "priority": 1},
-    {"name": "Lyft", "ats": "greenhouse", "id": "lyft", "priority": 1},
-    {"name": "DoorDash", "ats": "greenhouse", "id": "doordash", "priority": 1},
-    {"name": "Instacart", "ats": "greenhouse", "id": "instacart", "priority": 1},
-    {"name": "Dropbox", "ats": "greenhouse", "id": "dropbox", "priority": 1},
-    {"name": "Pinterest", "ats": "greenhouse", "id": "pinterest", "priority": 1},
-    {"name": "Twitch", "ats": "greenhouse", "id": "twitch", "priority": 1},
-    {"name": "Reddit", "ats": "greenhouse", "id": "reddit", "priority": 1},
-    {"name": "Spotify", "ats": "lever", "id": "spotify", "priority": 1},
-    {"name": "Netflix", "ats": "lever", "id": "netflix1", "priority": 1},
-    {"name": "Atlassian", "ats": "lever", "id": "atlassian1", "priority": 1},
-    {"name": "Palantir", "ats": "lever", "id": "palantir", "priority": 1},
-    {"name": "Okta", "ats": "greenhouse", "id": "okta", "priority": 1},
-    {"name": "Slack", "ats": "greenhouse", "id": "slack", "priority": 1},
-    {"name": "Block", "ats": "greenhouse", "id": "block", "priority": 1},
-    {"name": "Zillow", "ats": "greenhouse", "id": "zillow", "priority": 1},
-    {"name": "Peloton", "ats": "greenhouse", "id": "peloton", "priority": 1},
-    {"name": "Cloudflare", "ats": "greenhouse", "id": "cloudflare", "priority": 1},
-    {"name": "Zoom", "ats": "greenhouse", "id": "zoomvideo", "priority": 1},
-    {"name": "DocuSign", "ats": "greenhouse", "id": "docusign1", "priority": 1},
-    {"name": "Roku", "ats": "greenhouse", "id": "roku", "priority": 1},
-    {"name": "Snap", "ats": "greenhouse", "id": "snapchat", "priority": 1},
-    {"name": "Wayfair", "ats": "greenhouse", "id": "wayfair", "priority": 1},
-    {"name": "Box", "ats": "greenhouse", "id": "box", "priority": 1},
-    {"name": "Twilio", "ats": "greenhouse", "id": "twilio", "priority": 1},
-    {"name": "Splunk", "ats": "greenhouse", "id": "splunk1", "priority": 1},
-    {"name": "Yelp", "ats": "greenhouse", "id": "yelp1", "priority": 1},
-    {"name": "Zendesk", "ats": "greenhouse", "id": "zendesk1", "priority": 1},
-    {"name": "HubSpot", "ats": "greenhouse", "id": "hubspot1", "priority": 1},
-    {"name": "CrowdStrike", "ats": "greenhouse", "id": "crowdstrike", "priority": 1},
-    {"name": "Snowflake", "ats": "greenhouse", "id": "snowflakecomputerservices", "priority": 1},
-    {"name": "Datadog", "ats": "greenhouse", "id": "datadog", "priority": 1},
-    {"name": "HashiCorp", "ats": "greenhouse", "id": "hashicorp", "priority": 1},
-    {"name": "GitLab", "ats": "greenhouse", "id": "gitlab", "priority": 1},
-    {"name": "Snyk", "ats": "greenhouse", "id": "snyk", "priority": 1},
-    {"name": "MongoDB", "ats": "greenhouse", "id": "mongodb", "priority": 1},
-    {"name": "Elastic", "ats": "greenhouse", "id": "elastic", "priority": 1},
-    {"name": "PagerDuty", "ats": "greenhouse", "id": "pagerduty", "priority": 1},
-
-    # --- TIER 2: AI & ML ---
-    {"name": "OpenAI", "ats": "greenhouse", "id": "openai", "priority": 1},
-    {"name": "Anthropic", "ats": "ashby", "id": "anthropic", "priority": 1},
-    {"name": "Databricks", "ats": "greenhouse", "id": "databricks", "priority": 1},
-    {"name": "Scale AI", "ats": "ashby", "id": "scaleai", "priority": 1},
-    {"name": "Hugging Face", "ats": "ashby", "id": "huggingface", "priority": 1},
-    {"name": "Cohere", "ats": "ashby", "id": "cohere", "priority": 1},
-    {"name": "Jasper", "ats": "ashby", "id": "jasper", "priority": 2},
-    {"name": "Perplexity", "ats": "ashby", "id": "perplexity", "priority": 2},
-    {"name": "Mistral", "ats": "ashby", "id": "mistralai", "priority": 2},
-    {"name": "Midjourney", "ats": "ashby", "id": "midjourney", "priority": 2},
-    {"name": "Runway", "ats": "ashby", "id": "runwayml", "priority": 2},
-    {"name": "Character.ai", "ats": "ashby", "id": "character", "priority": 2},
-    {"name": "LangChain", "ats": "ashby", "id": "langchain", "priority": 2},
-    {"name": "Copy.ai", "ats": "ashby", "id": "copyai", "priority": 2},
-    {"name": "Glean", "ats": "ashby", "id": "glean", "priority": 2},
-    {"name": "Harvey", "ats": "ashby", "id": "harvey", "priority": 2},
-    {"name": "Shield AI", "ats": "greenhouse", "id": "shieldai", "priority": 2},
-    {"name": "Anduril", "ats": "greenhouse", "id": "andurilindustries", "priority": 2},
-    {"name": "C3 AI", "ats": "greenhouse", "id": "c3ai", "priority": 2},
-    {"name": "Nuro", "ats": "greenhouse", "id": "nuro", "priority": 2},
-    {"name": "Cruise", "ats": "greenhouse", "id": "getcruise", "priority": 2},
-    {"name": "Waymo", "ats": "greenhouse", "id": "waymo", "priority": 2},
-    {"name": "Aurora", "ats": "greenhouse", "id": "aurora", "priority": 2},
-    {"name": "Zoox", "ats": "greenhouse", "id": "zoox", "priority": 2},
-
-    # --- TIER 3: FINTECH & CRYPTO ---
-    {"name": "Robinhood", "ats": "greenhouse", "id": "robinhood", "priority": 2},
-    {"name": "Coinbase", "ats": "greenhouse", "id": "coinbase", "priority": 1},
-    {"name": "Affirm", "ats": "greenhouse", "id": "affirm", "priority": 2},
-    {"name": "SoFi", "ats": "greenhouse", "id": "sofi", "priority": 2},
-    {"name": "Chime", "ats": "greenhouse", "id": "chime", "priority": 2},
-    {"name": "Brex", "ats": "greenhouse", "id": "brex", "priority": 2},
-    {"name": "Ramp", "ats": "ashby", "id": "ramp", "priority": 2},
-    {"name": "Mercury", "ats": "greenhouse", "id": "mercury", "priority": 2},
-    {"name": "Plaid", "ats": "greenhouse", "id": "plaid", "priority": 2},
-    {"name": "Kraken", "ats": "lever", "id": "kraken", "priority": 2},
-    {"name": "Chainalysis", "ats": "greenhouse", "id": "chainalysis", "priority": 2},
-    {"name": "Anchorage Digital", "ats": "greenhouse", "id": "anchorage", "priority": 3},
-    {"name": "Carta", "ats": "greenhouse", "id": "carta", "priority": 2},
-    {"name": "Bill.com", "ats": "greenhouse", "id": "billcom", "priority": 3},
-    {"name": "Expensify", "ats": "greenhouse", "id": "expensify", "priority": 3},
-
-    # --- TIER 4: SAAS & INFRASTRUCTURE ---
-    {"name": "Figma", "ats": "ashby", "id": "figma", "priority": 1},
-    {"name": "Notion", "ats": "ashby", "id": "notion", "priority": 1},
-    {"name": "Canva", "ats": "greenhouse", "id": "canva", "priority": 1},
-    {"name": "Miro", "ats": "greenhouse", "id": "miro", "priority": 2},
-    {"name": "Airtable", "ats": "greenhouse", "id": "airtable", "priority": 2},
-    {"name": "Rippling", "ats": "lever", "id": "rippling", "priority": 2},
-    {"name": "Deel", "ats": "ashby", "id": "deel", "priority": 2},
-    {"name": "Remote", "ats": "greenhouse", "id": "remote", "priority": 3},
-    {"name": "Gusto", "ats": "greenhouse", "id": "gusto", "priority": 3},
-    {"name": "Navan", "ats": "greenhouse", "id": "navan", "priority": 3},
-    {"name": "Checkr", "ats": "greenhouse", "id": "checkr", "priority": 3},
-    {"name": "Webflow", "ats": "greenhouse", "id": "webflow", "priority": 2},
-    {"name": "Retool", "ats": "ashby", "id": "retool", "priority": 2},
-    {"name": "Vanta", "ats": "ashby", "id": "vanta", "priority": 2},
-    {"name": "Drata", "ats": "greenhouse", "id": "drata", "priority": 3},
-    {"name": "Linear", "ats": "ashby", "id": "linear", "priority": 2},
-    {"name": "ClickUp", "ats": "greenhouse", "id": "clickup", "priority": 3},
-    {"name": "Monday.com", "ats": "greenhouse", "id": "monday", "priority": 3},
-    {"name": "Asana", "ats": "greenhouse", "id": "asana", "priority": 2},
-    {"name": "Coda", "ats": "greenhouse", "id": "coda", "priority": 3},
-    {"name": "Zapier", "ats": "greenhouse", "id": "zapier", "priority": 2},
-    {"name": "Loom", "ats": "greenhouse", "id": "loom", "priority": 3},
-    {"name": "Discord", "ats": "greenhouse", "id": "discord", "priority": 2},
-    {"name": "Substack", "ats": "ashby", "id": "substack", "priority": 3},
-    {"name": "Patreon", "ats": "greenhouse", "id": "patreon", "priority": 3},
-    {"name": "Duolingo", "ats": "greenhouse", "id": "duolingo", "priority": 2},
-    {"name": "Roblox", "ats": "greenhouse", "id": "roblox", "priority": 2},
-    {"name": "Unity", "ats": "greenhouse", "id": "unity-technologies", "priority": 2},
-    {"name": "SpaceX", "ats": "greenhouse", "id": "spacex", "priority": 1},
-    {"name": "Rivian", "ats": "greenhouse", "id": "rivian", "priority": 2},
-    {"name": "Lucid Motors", "ats": "greenhouse", "id": "lucidmotors", "priority": 3},
-    {"name": "Postman", "ats": "greenhouse", "id": "postman", "priority": 2},
-    {"name": "Grammarly", "ats": "greenhouse", "id": "grammarly", "priority": 2},
-]
+# INTEGRATED: Replaced local list with imported complete list
+TARGETS = COMPLETE_TARGETS
 
 # Sort targets by priority for better resource allocation
 TARGETS.sort(key=lambda x: x.get('priority', 3))
@@ -375,10 +262,15 @@ rate_limiters = {
 # ===========================================================================
 
 class SalaryFinder:
-    """Enhanced salary extraction"""
+    """
+    Enhanced salary extraction utils. 
+    NOTE: Primary extraction is now done via EnhancedSalaryExtractor (imported),
+    but these utils are kept for Analytics and Scoring range parsing.
+    """
     
     @staticmethod
     def extract(text: str) -> Optional[str]:
+        # Fallback method if needed, but we prefer EnhancedSalaryExtractor
         if not text:
             return None
         
@@ -427,6 +319,7 @@ class SalaryFinder:
             nums = [n * 1000 for n in nums]
         
         return (min(nums), max(nums))
+
 # ===========================================================================
 #                        JOB SCORING SYSTEM (FULLY FIXED)
 # ===========================================================================
@@ -1526,11 +1419,11 @@ async def cleanup_expired_jobs(firebase_manager: FirebaseManager):
         logger.error(f"❌ Error during cleanup: {e}")
 
 # ===========================================================================
-#                        SCRAPER FACTORY (FIXED)
+#                        SCRAPER FACTORY (FIXED & INTEGRATED)
 # ===========================================================================
 
 class ScraperFactory:
-    """Multi-ATS scraper with better error handling"""
+    """Multi-ATS scraper with better error handling and INTEGRATED SALARY EXTRACTION"""
     
     @staticmethod
     async def fetch_with_retry(
@@ -1597,7 +1490,7 @@ class ScraperFactory:
     
     @staticmethod
     async def _fetch_greenhouse(session: aiohttp.ClientSession, target: dict) -> List[dict]:
-        """Greenhouse ATS scraper - FIXED to handle date parsing correctly"""
+        """Greenhouse ATS scraper - Integrated with EnhancedSalaryExtractor"""
         url = f"https://boards-api.greenhouse.io/v1/boards/{target['id']}/jobs?content=true"
         
         headers = {
@@ -1622,7 +1515,15 @@ class ScraperFactory:
                         content = j.get('content', '')
                         description = ContentExtractor.extract_description_summary(content)
                         requirements = ContentExtractor.extract_requirements(content)
-                        salary = SalaryFinder.extract(content)
+                        
+                        # NEW: Enhanced salary extraction
+                        job_data_for_salary = {
+                            'description': content,
+                            'content': content,
+                            'title': j['title'],
+                            'requirements': requirements
+                        }
+                        salary = extract_salary_from_job(job_data_for_salary)
                         
                         # Extract location - handle both formats
                         location_obj = j.get('location', {})
@@ -1638,7 +1539,6 @@ class ScraperFactory:
                         if posted_date_str:
                             try:
                                 # Greenhouse date format: "2023-10-25T14:30:00Z"
-                                # Remove trailing Z and add timezone for Python 3.7+ compatibility
                                 date_str = posted_date_str.replace('Z', '+00:00')
                                 posted_dt = datetime.fromisoformat(date_str)
                                 current_time = datetime.now(timezone.utc)
@@ -1656,8 +1556,8 @@ class ScraperFactory:
                             'company': target['name'],
                             'description': description,
                             'requirements': requirements,
-                            'salary': salary,
-                            'posted_days_ago': posted_days_ago,  # FIXED: Now an integer!
+                            'salary': salary,  # Now uses enhanced extractor
+                            'posted_days_ago': posted_days_ago,
                         })
                     except Exception as e:
                         logger.error(f"Error processing Greenhouse job {j.get('id', 'unknown')}: {e}")
@@ -1674,7 +1574,7 @@ class ScraperFactory:
     
     @staticmethod
     async def _fetch_ashby(session: aiohttp.ClientSession, target: dict) -> List[dict]:
-        """Ashby ATS scraper"""
+        """Ashby ATS scraper - Integrated with EnhancedSalaryExtractor"""
         url = f"https://api.ashbyhq.com/posting-api/job-board/{target['id']}"
         
         headers = {
@@ -1696,7 +1596,15 @@ class ScraperFactory:
                         j.get('descriptionHtml', '') or j.get('description', '')
                     )
                     requirements = ContentExtractor.extract_requirements(description)
-                    salary = SalaryFinder.extract(j.get('title', '') + ' ' + description)
+                    
+                    # NEW: Enhanced salary extraction
+                    job_data_for_salary = {
+                        'description': description,
+                        'content': description,
+                        'title': j['title'],
+                        'requirements': requirements
+                    }
+                    salary = extract_salary_from_job(job_data_for_salary)
                     
                     jobs.append({
                         'id': str(j['id']),
@@ -1707,7 +1615,7 @@ class ScraperFactory:
                         'company': target['name'],
                         'description': description,
                         'requirements': requirements,
-                        'salary': salary,
+                        'salary': salary,  # Now uses enhanced extractor
                         'posted_days_ago': 0,  # Ashby doesn't provide posting date
                     })
                 return jobs
@@ -1721,7 +1629,7 @@ class ScraperFactory:
     
     @staticmethod
     async def _fetch_lever(session: aiohttp.ClientSession, target: dict) -> List[dict]:
-        """Lever ATS scraper"""
+        """Lever ATS scraper - Integrated with EnhancedSalaryExtractor"""
         url = f"https://api.lever.co/v0/postings/{target['id']}?mode=json"
         
         headers = {
@@ -1741,7 +1649,15 @@ class ScraperFactory:
                 for j in data:
                     description = j.get('descriptionPlain', '') or j.get('description', '')
                     requirements = ContentExtractor.extract_requirements(description)
-                    salary = SalaryFinder.extract(description)
+                    
+                    # NEW: Enhanced salary extraction
+                    job_data_for_salary = {
+                        'description': description,
+                        'content': description,
+                        'title': j['text'],
+                        'requirements': requirements
+                    }
+                    salary = extract_salary_from_job(job_data_for_salary)
                     
                     # Calculate days since posted - Lever provides timestamp
                     posted_at = j.get('createdAt', 0)
@@ -1762,8 +1678,8 @@ class ScraperFactory:
                         'company': target['name'],
                         'description': description[:2000],
                         'requirements': requirements,
-                        'salary': salary,
-                        'posted_days_ago': days_ago,  # Already an integer
+                        'salary': salary,  # Now uses enhanced extractor
+                        'posted_days_ago': days_ago,
                     })
                 return jobs
                 
@@ -1848,10 +1764,10 @@ class JobEngine:
     async def run(self):
         """Execute the full scraping pipeline"""
         logger.info("="*80)
-        logger.info("🚀 JOBHUNT AI - PRODUCTION SCRAPER V3.1 (FIXED & OPTIMIZED)")
+        logger.info("🚀 JOBHUNT AI - PRODUCTION SCRAPER V3.2 (INTEGRATED)")
         logger.info("="*80)
         logger.info(f"📅 Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"🎯 Targets: {len(TARGETS)} companies (with corrected IDs)")
+        logger.info(f"🎯 Targets: {len(TARGETS)} companies (from Complete Target List)")
         logger.info(f"⚙️  Config: {Config.MAX_CONCURRENCY} max concurrency, {Config.RETRY_ATTEMPTS} retries")
         logger.info(f"📈 Rate Limits: Greenhouse={Config.GREENHOUSE_RATE}/s, Ashby={Config.ASHBY_RATE}/s, Lever={Config.LEVER_RATE}/s")
         
@@ -1996,7 +1912,7 @@ if __name__ == "__main__":
     # Enhanced entry point with better error handling
     try:
         start_time = time.time()
-        logger.info("🔧 Initializing JobHunt AI Scraper V3.1 (Fixed & Optimized)...")
+        logger.info("🔧 Initializing JobHunt AI Scraper V3.2 (Integrated)...")
         
         # Run the enhanced engine
         asyncio.run(JobEngine().run())

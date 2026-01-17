@@ -23,7 +23,7 @@ import {
 import { 
   Search, MapPin, Clock, Building2, Plus, DollarSign, 
   ArrowRight, Target, ChevronLeft, ChevronRight, Sparkles, 
-  X, Briefcase, Zap, Bookmark, Filter
+  X, Briefcase, Zap, Bookmark, Filter, Scale // Added Scale icon
 } from 'lucide-react';
 // Added isToday and isThisWeek for better filtering
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
@@ -132,6 +132,9 @@ export default function JobsPage() {
   const [hasMore, setHasMore] = useState(true);
   const [cursors, setCursors] = useState<QueryDocumentSnapshot<DocumentData>[]>([]);
   
+  // Comparison State
+  const [compareList, setCompareList] = useState<string[]>([]);
+
   // --- JOBS PER PAGE ---
   const JOBS_PER_PAGE = 50;
 
@@ -170,6 +173,24 @@ export default function JobsPage() {
     if (postedAt.seconds) return new Date(postedAt.seconds * 1000); // Seconds timestamp
     if (typeof postedAt === 'string') return new Date(postedAt); // String format
     return new Date(); // Fallback
+  };
+
+  // --- Comparison Handler ---
+  const toggleCompare = (e: React.MouseEvent, jobId: string) => {
+    e.preventDefault(); // Prevent navigating to job details
+    e.stopPropagation();
+    
+    setCompareList(prev => {
+      if (prev.includes(jobId)) {
+        return prev.filter(id => id !== jobId);
+      }
+      if (prev.length >= 4) {
+        // Optional: limit to 4 items
+        alert("You can compare up to 4 jobs at a time.");
+        return prev;
+      }
+      return [...prev, jobId];
+    });
   };
 
   // --- 1. Fetch User Profile ---
@@ -648,8 +669,22 @@ export default function JobsPage() {
                             </div>
                           </div>
 
-                          {/* CTA */}
+                          {/* CTA (Updated with Compare Button) */}
                           <div className="flex items-end justify-end md:justify-center md:flex-col md:items-center md:border-l border-white/5 md:pl-6 gap-2">
+                             
+                             {/* COMPARE BUTTON */}
+                             <button
+                               onClick={(e) => toggleCompare(e, job.id)}
+                               className={`mt-2 md:mt-0 mb-0 md:mb-3 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all z-20 relative ${
+                                 compareList.includes(job.id)
+                                   ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
+                                   : 'bg-white/5 hover:bg-white/10 text-gray-400 border border-white/5'
+                               }`}
+                             >
+                               <Scale className="w-3 h-3" />
+                               {compareList.includes(job.id) ? 'Remove' : 'Compare'}
+                             </button>
+
                              <div className="flex items-center text-sm font-bold text-blue-400 group-hover:translate-x-1 transition-transform">
                                View <ArrowRight className="w-4 h-4 ml-1" />
                              </div>
@@ -671,6 +706,18 @@ export default function JobsPage() {
           )}
         </div>
       </div>
+
+      {/* FLOATING ACTION BUTTON FOR COMPARISON */}
+      {compareList.length >= 2 && (
+        <div className="fixed bottom-8 right-8 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <Link href={`/compare?jobs=${compareList.join(',')}`}>
+            <button className="flex items-center gap-2 px-6 py-4 bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl font-bold text-white shadow-[0_0_30px_rgba(59,130,246,0.5)] hover:scale-105 transition-transform">
+              <Scale className="w-5 h-5" />
+              Compare {compareList.length} Jobs
+            </button>
+          </Link>
+        </div>
+      )}
       
       <style jsx global>{`
         @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
