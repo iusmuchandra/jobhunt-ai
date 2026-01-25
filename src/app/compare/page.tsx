@@ -1,6 +1,6 @@
 "use client"; 
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { collection, query, where, getDocs, documentId } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -35,8 +35,8 @@ interface Metric {
   highlight_remote?: boolean;
 }
 
-// Job Comparison Page Component
-export default function JobComparePage() {
+// --- 1. Inner Component (Contains the Logic) ---
+function CompareContent() {
   const searchParams = useSearchParams();
   const jobIds = searchParams.get('jobs')?.split(',') || [];
   
@@ -45,11 +45,13 @@ export default function JobComparePage() {
 
   useEffect(() => {
     async function fetchJobs() {
-      if (jobIds.length === 0) return;
+      if (jobIds.length === 0) {
+        setLoading(false);
+        return;
+      }
       
       try {
         const jobsRef = collection(db, 'jobs');
-        // Limit to 3 jobs for comparison
         const q = query(jobsRef, where(documentId(), 'in', jobIds.slice(0, 3)));
         const snapshot = await getDocs(q);
         
@@ -68,7 +70,7 @@ export default function JobComparePage() {
     }
     
     fetchJobs();
-  }, [jobIds]);
+  }, [jobIds]); // Removed unnecessary dependencies to prevent re-loops
 
   if (loading) {
     return (
@@ -172,7 +174,6 @@ export default function JobComparePage() {
     if (metric.lower_better) {
       const jobDate = job[metric.key]?.toDate ? job[metric.key].toDate() : new Date(job[metric.key] || new Date());
       const best = getBestValue(metric, jobs);
-      // For "Lower better" (time elapsed), we actually want the max timestamp (most recent date)
       return jobDate.getTime() === best;
     }
     if (metric.highlight_remote) {
@@ -286,5 +287,21 @@ export default function JobComparePage() {
         )}
       </div>
     </div>
+  );
+}
+
+// --- 2. Main Page Component (Wraps in Suspense) ---
+export default function JobComparePage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#0A0A0A] text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-400">Loading...</p>
+        </div>
+      </div>
+    }>
+      <CompareContent />
+    </Suspense>
   );
 }
