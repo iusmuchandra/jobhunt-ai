@@ -6,22 +6,33 @@ import { collection, query, where, getDocs, documentId } from 'firebase/firestor
 import { db } from '@/lib/firebase';
 import { 
   Building2, MapPin, DollarSign, Target, TrendingUp, 
-  Calendar, Zap, ArrowRight, X, Check, Minus 
+  Calendar, Zap, ArrowRight, X, Check, LucideIcon 
 } from 'lucide-react';
 import Link from 'next/link';
 
-// TypeScript Interface
+// TypeScript Interfaces
 interface Job {
   id: string;
   title: string;
   company: string;
-  salary?: string;
   location: string;
+  salary?: string;
   seniority?: string;
   matchScore?: number;
   postedAt?: any;
   tags?: string[];
-  [key: string]: any; // For any additional fields
+  [key: string]: any;
+}
+
+interface Metric {
+  key: string;
+  label: string;
+  icon: LucideIcon;
+  format: (val: any) => string;
+  higher_better?: boolean;
+  lower_better?: boolean;
+  highlight_tiers?: boolean;
+  highlight_remote?: boolean;
 }
 
 // Job Comparison Page Component
@@ -37,15 +48,16 @@ export default function JobComparePage() {
       if (jobIds.length === 0) return;
       
       try {
-        // Fetch all jobs by IDs
         const jobsRef = collection(db, 'jobs');
+        // Limit to 3 jobs for comparison
         const q = query(jobsRef, where(documentId(), 'in', jobIds.slice(0, 3)));
         const snapshot = await getDocs(q);
         
+        // FIX: Explicitly cast the result to Job[]
         const jobsData = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
-        }));
+        })) as Job[];
         
         setJobs(jobsData);
       } catch (error) {
@@ -86,49 +98,49 @@ export default function JobComparePage() {
     );
   }
 
-  const comparisonMetrics = [
+  const comparisonMetrics: Metric[] = [
     {
       key: 'matchScore',
       label: 'Match Score',
       icon: Target,
-      format: (val) => `${val}%`,
+      format: (val: any) => `${val}%`,
       higher_better: true
     },
     {
       key: 'company',
       label: 'Company',
       icon: Building2,
-      format: (val) => val,
+      format: (val: any) => val,
       highlight_tiers: true
     },
     {
       key: 'salary',
       label: 'Salary',
       icon: DollarSign,
-      format: (val) => val || 'Not specified',
+      format: (val: any) => val || 'Not specified',
       higher_better: true
     },
     {
       key: 'location',
       label: 'Location',
       icon: MapPin,
-      format: (val) => val,
+      format: (val: any) => val,
       highlight_remote: true
     },
     {
       key: 'seniority',
       label: 'Seniority',
       icon: TrendingUp,
-      format: (val) => val?.charAt(0).toUpperCase() + val?.slice(1) || 'Mid',
+      format: (val: any) => val?.charAt(0).toUpperCase() + val?.slice(1) || 'Mid',
     },
     {
       key: 'postedAt',
       label: 'Posted',
       icon: Calendar,
-      format: (val) => {
+      format: (val: any) => {
         if (!val) return 'Recently';
         const date = val.toDate ? val.toDate() : new Date(val);
-        const days = Math.floor((new Date() - date) / (1000 * 60 * 60 * 24));
+        const days = Math.floor((new Date().getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
         if (days === 0) return 'Today';
         if (days === 1) return 'Yesterday';
         return `${days} days ago`;
@@ -137,7 +149,7 @@ export default function JobComparePage() {
     },
   ];
 
-  const getBestValue = (metric, jobs) => {
+  const getBestValue = (metric: Metric, jobs: Job[]) => {
     if (metric.key === 'matchScore') {
       return Math.max(...jobs.map(j => j[metric.key] || 0));
     }
@@ -152,7 +164,7 @@ export default function JobComparePage() {
     return null;
   };
 
-  const isHighlighted = (job, metric) => {
+  const isHighlighted = (job: Job, metric: Metric) => {
     if (metric.higher_better) {
       const best = getBestValue(metric, jobs);
       return job[metric.key] === best;
@@ -160,6 +172,7 @@ export default function JobComparePage() {
     if (metric.lower_better) {
       const jobDate = job[metric.key]?.toDate ? job[metric.key].toDate() : new Date(job[metric.key] || new Date());
       const best = getBestValue(metric, jobs);
+      // For "Lower better" (time elapsed), we actually want the max timestamp (most recent date)
       return jobDate.getTime() === best;
     }
     if (metric.highlight_remote) {
