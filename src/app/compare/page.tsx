@@ -15,7 +15,7 @@ export default function JobComparePage() {
   const searchParams = useSearchParams();
   const jobIds = searchParams.get('jobs')?.split(',') || [];
   
-  const [jobs, setJobs] = useState([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
