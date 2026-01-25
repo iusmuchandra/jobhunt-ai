@@ -10,6 +10,20 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 
+// TypeScript Interface
+interface Job {
+  id: string;
+  title: string;
+  company: string;
+  salary?: string;
+  location: string;
+  seniority?: string;
+  matchScore?: number;
+  postedAt?: any;
+  tags?: string[];
+  [key: string]: any; // For any additional fields
+}
+
 // Job Comparison Page Component
 export default function JobComparePage() {
   const searchParams = useSearchParams();
