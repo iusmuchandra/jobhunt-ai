@@ -271,6 +271,7 @@ export default function JobDetailsPage() {
   // OPTIMIZED: Load job and profile data FIRST, AI analysis in background
   useEffect(() => {
     if (!id || !user) return;
+    const currentUser = user; // narrowed: guaranteed non-null from here down
     
     let isMounted = true;
     
@@ -280,7 +281,7 @@ export default function JobDetailsPage() {
         // Parallel load of job and profile
         const [jobSnapshot, userSnapshot] = await Promise.all([
           getDoc(doc(db, 'jobs', id as string)),
-          getDoc(doc(db, 'users', user.uid))
+          getDoc(doc(db, 'users', currentUser.uid))
         ]);
         
         if (!isMounted) return;
@@ -325,7 +326,7 @@ export default function JobDetailsPage() {
             try {
               const matchQuery = query(
                 collection(db, 'user_job_matches'), 
-                where('userId', '==', user.uid), 
+                where('userId', '==', currentUser.uid), 
                 where('jobId', '==', id), 
                 limit(1)
               );
@@ -347,7 +348,7 @@ export default function JobDetailsPage() {
             try {
               const savedQuery = query(
                 collection(db, 'saved_jobs'),
-                where('userId', '==', user.uid),
+                where('userId', '==', currentUser.uid),
                 where('jobId', '==', id)
               );
               const savedSnapshot = await getDocs(savedQuery);
