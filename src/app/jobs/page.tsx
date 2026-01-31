@@ -346,6 +346,9 @@ export default function JobsPage() {
 
   // --- Filter Logic (Enhanced with Robust Time Parsing) ---
   const filteredJobs = jobs.filter(job => {
+    // FIX 1: Add safety check for job ID
+    if (!job.id) return false;
+
     if (!profileLoaded && negativeFilters.length === 0) return false;
     
     // Robust Time Calculations
@@ -592,7 +595,8 @@ export default function JobsPage() {
               {/* Holographic Job Cards */}
               <div className="grid grid-cols-1 gap-5">
                 {filteredJobs.map((job) => (
-                  <Link key={job.id} href={`/jobs/${job.id}`}>
+                  // FIX 2: Added prefetch={false}
+                  <Link key={job.id} href={`/jobs/${job.id}`} prefetch={false}>
                     <div 
                       onMouseMove={handleMouseMove}
                       className="group relative rounded-3xl p-[1px] overflow-hidden cursor-pointer transition-transform hover:scale-[1.01] active:scale-[0.99]"

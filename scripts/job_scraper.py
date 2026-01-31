@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-   JOBHUNT AI - ENTERPRISE PRODUCTION ENGINE V3.2 (FULLY FIXED & INTEGRATED)
+   JOBHUNT AI - ENTERPRISE PRODUCTION ENGINE V3.3 (STRICT FILTERING)
    - INTEGRATED: Enhanced Salary Extraction
    - INTEGRATED: Complete Target List
    - FIXED: Strict USA location filtering
@@ -11,6 +11,7 @@
    - OPTIMIZED: Rate limits and performance tuning
    - ANALYTICS: Enhanced market intelligence
    - DATABASE: Full Firestore integration
+   - NEW: Strict Keyword Enforcement (No matches = Automatic Rejection)
 =============================================================================
 """
 
@@ -422,6 +423,9 @@ class JobScorer:
         description_lower = job.get('description', '').lower()
         company = job['company']
         
+        detected_seniority = JobScorer._extract_seniority(title_lower)
+        days_ago = JobScorer._safe_get_days_ago(job)
+        
         # 🚨 STEP 0: USA LOCATION FILTER (STRICT)
         if not JobScorer._is_usa_location(job.get('location', '')):
             return {
@@ -458,13 +462,28 @@ class JobScorer:
                     keyword_score += 6
                 matched_keywords.append(kw)
         
+        # NEW: Debug Log to track scoring logic
+        logger.info(f"🔍 Scoring: {job['title']} | Keywords: {profile.get('keywords', [])} | Matched: {matched_keywords}")
+
+        # NEW: STRICT FILTER - Require at least one keyword match
+        if not matched_keywords:
+            return {
+                'score': 0,
+                'flags': ['⚠️ No keyword match'],
+                'seniority': detected_seniority,
+                'matched_keywords': [],
+                'location_match': False,
+                'days_ago': days_ago,
+                'rejected': True,
+                'rejection_reason': f"Strict filter: Title '{job['title']}' did not match any keywords."
+            }
+        
         score += min(keyword_score, 50)
         
         if matched_keywords:
             flags.append(f"Keywords: {', '.join(list(set(matched_keywords))[:3])}")
         
         # 2. SENIORITY MATCH
-        detected_seniority = JobScorer._extract_seniority(title_lower)
         target_seniority_levels = profile.get('seniority', [])
         
         if detected_seniority in target_seniority_levels:
@@ -511,8 +530,6 @@ class JobScorer:
                 flags.append("💵 High Salary")
         
         # 6. FRESHNESS BONUS
-        days_ago = JobScorer._safe_get_days_ago(job)
-        
         if days_ago <= 1:
             score += 8
             flags.append("🔥 Just Posted")
@@ -580,17 +597,17 @@ class JobScorer:
                         'rejection_reason': f"Description emphasizes negative keyword: {neg_kw} ({occurrences}x)"
                     }
 
-        # RELAXED REJECTION LOGIC
-        if not matched_keywords and score < 15:
+        # RELAXED REJECTION LOGIC (Now redundant due to strict filter, but kept for low scores with keywords)
+        if score < 15:
             return {
                 'score': 0,
                 'flags': ['⚠️ Low relevance'],
                 'seniority': detected_seniority,
-                'matched_keywords': [],
+                'matched_keywords': matched_keywords,
                 'location_match': False,
                 'days_ago': days_ago,
                 'rejected': True,
-                'rejection_reason': 'Low score & no keywords'
+                'rejection_reason': 'Low score'
             }
         
         return {
