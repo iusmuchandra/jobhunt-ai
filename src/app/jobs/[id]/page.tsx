@@ -270,7 +270,7 @@ export default function JobDetailsPage() {
 
   // OPTIMIZED: Load job and profile data FIRST, AI analysis in background
   useEffect(() => {
-    if (!id || !auth.currentUser) return;
+    if (!id || !user) return;
     
     let isMounted = true;
     
@@ -280,7 +280,7 @@ export default function JobDetailsPage() {
         // Parallel load of job and profile
         const [jobSnapshot, userSnapshot] = await Promise.all([
           getDoc(doc(db, 'jobs', id as string)),
-          getDoc(doc(db, 'users', auth.currentUser!.uid))
+          getDoc(doc(db, 'users', user.uid))
         ]);
         
         if (!isMounted) return;
@@ -325,7 +325,7 @@ export default function JobDetailsPage() {
             try {
               const matchQuery = query(
                 collection(db, 'user_job_matches'), 
-                where('userId', '==', auth.currentUser!.uid), 
+                where('userId', '==', user.uid), 
                 where('jobId', '==', id), 
                 limit(1)
               );
@@ -347,7 +347,7 @@ export default function JobDetailsPage() {
             try {
               const savedQuery = query(
                 collection(db, 'saved_jobs'),
-                where('userId', '==', auth.currentUser!.uid),
+                where('userId', '==', user.uid),
                 where('jobId', '==', id)
               );
               const savedSnapshot = await getDocs(savedQuery);
@@ -371,7 +371,7 @@ export default function JobDetailsPage() {
     return () => {
       isMounted = false;
     };
-  }, [id, calculateMatchScore]);
+  }, [id, user, calculateMatchScore]);
 
   // SEPARATE EFFECT: Load AI analysis in background (non-blocking)
   useEffect(() => {
@@ -445,7 +445,7 @@ export default function JobDetailsPage() {
   }, [job, userProfile, matchScore]);
 
   const handleTrackApplication = async () => {
-    if (!auth.currentUser || !job) return;
+    if (!user || !job) return;
     
     setApplying(true);
     
@@ -477,7 +477,7 @@ export default function JobDetailsPage() {
   };
 
   const handleAutoApply = async () => {
-    if (!auth.currentUser || !job) return;
+    if (!user || !job) return;
     
     setAutoApplying(true);
     
@@ -525,11 +525,11 @@ export default function JobDetailsPage() {
   };
 
   const handleSaveJob = async () => {
-    if (!auth.currentUser || !job || isSaved) return;
+    if (!user || !job || isSaved) return;
     setSaving(true);
     try {
       await addDoc(collection(db, 'saved_jobs'), {
-        userId: auth.currentUser.uid,
+        userId: user.uid,
         jobId: job.id,
         jobTitle: job.title,
         company: job.company,
