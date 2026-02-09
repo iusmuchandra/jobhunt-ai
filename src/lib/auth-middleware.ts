@@ -1,5 +1,5 @@
-// src/lib/auth-middleware.ts
-import { auth } from '@/lib/firebase-admin';
+// src/lib/auth-middleware.ts - CORRECTED VERSION
+import { adminAuth } from '@/lib/firebase-admin';
 import { NextResponse } from 'next/server';
 
 /**
@@ -23,7 +23,7 @@ export async function verifyAuth(request: Request): Promise<string> {
     }
 
     // Verify the Firebase ID token
-    const decodedToken = await auth.verifyIdToken(token);
+    const decodedToken = await adminAuth.verifyIdToken(token);
     
     return decodedToken.uid;
   } catch (error: any) {

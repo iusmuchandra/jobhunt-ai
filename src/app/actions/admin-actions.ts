@@ -1,7 +1,7 @@
-// src/app/actions/admin-actions.ts - Server Actions for Admin Controls
+// src/app/actions/admin-actions.ts - CORRECTED VERSION
 'use server';
 
-import { auth } from '@/lib/firebase-admin';
+import { adminAuth } from '@/lib/firebase-admin';
 import { cookies } from 'next/headers';
 
 /**
@@ -19,7 +19,7 @@ export async function triggerJobScraper() {
     }
 
     // Verify session
-    const decodedClaims = await auth.verifySessionCookie(sessionCookie);
+    const decodedClaims = await adminAuth.verifySessionCookie(sessionCookie);
     
     // Add admin check here
     // Example: if (!decodedClaims.admin) throw new Error('Not authorized');
@@ -68,7 +68,7 @@ export async function syncJobs() {
       throw new Error('Not authenticated');
     }
 
-    const decodedClaims = await auth.verifySessionCookie(sessionCookie);
+    const decodedClaims = await adminAuth.verifySessionCookie(sessionCookie);
     // Add admin check
     
     const CRON_SECRET = process.env.CRON_SECRET;
