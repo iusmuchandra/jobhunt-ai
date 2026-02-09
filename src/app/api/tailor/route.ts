@@ -1,7 +1,9 @@
+// src/app/api/tailor/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
+import { verifyAuth } from '@/lib/auth-middleware';
 
 // Initialize rate limiter
 const ratelimit = new Ratelimit({
@@ -15,9 +17,12 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 export async function POST(req: Request) {
   try {
-    // Rate limiting - limit to 10 requests per hour per IP
-    const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'anonymous';
-    const { success, limit, reset, remaining } = await ratelimit.limit(ip);
+    // 🔒 SECURITY FIX: Verify authentication FIRST
+    const userId = await verifyAuth(req);
+    console.log('✅ Authenticated user:', userId);
+
+    // Rate limiting - now rate limit by authenticated userId instead of IP
+    const { success, limit, reset, remaining } = await ratelimit.limit(userId);
 
     if (!success) {
       const retryAfter = Math.ceil((reset - Date.now()) / 1000);
@@ -40,15 +45,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const { userId, jobId, generatePDF } = await req.json();
+    // 🔒 SECURITY FIX: Get jobId from body, but userId comes from verified token
+    const { jobId, generatePDF } = await req.json();
 
-    if (!userId || !jobId) {
-      return NextResponse.json({ error: 'Missing userId or jobId' }, { status: 400 });
+    if (!jobId) {
+      return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
     }
 
     console.log('🔥 Fetching data for userId:', userId, 'jobId:', jobId);
 
-    // 1. Fetch User's Profile Data
+    // 1. Fetch User's Profile Data (using VERIFIED userId)
     const userDoc = await adminDb.collection('users').doc(userId).get();
     if (!userDoc.exists) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
@@ -297,6 +303,13 @@ Output your suggestions now:
     }
 
   } catch (error: any) {
+    // Handle auth errors specifically
+    if (error.message === 'Unauthorized') {
+      return NextResponse.json({ 
+        error: 'Unauthorized. Please sign in.' 
+      }, { status: 401 });
+    }
+    
     console.error("❌ Tailor Error:", error);
     return NextResponse.json({ 
       error: error.message || 'Internal server error' 

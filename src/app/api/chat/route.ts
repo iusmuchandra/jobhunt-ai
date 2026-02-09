@@ -1,27 +1,54 @@
-// app/api/chat/route.ts - FIXED VERSION
+// src/app/api/chat/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
+import { verifyAuth } from '@/lib/auth-middleware';
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
+
+// Rate limiter for chat
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(30, '1 h'), // 30 messages per hour
+  analytics: true,
+  prefix: '@upstash/ratelimit:chat',
+});
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-const DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"; // ✅ FIXED: Added /v1
 
 export async function POST(req: Request) {
-  if (!DEEPSEEK_API_KEY) {
-    return NextResponse.json({ 
-      error: 'DeepSeek API key not configured. Please add DEEPSEEK_API_KEY to your .env.local file.' 
-    }, { status: 500 });
-  }
-
   try {
-    const { messages } = await req.json();
-
-    if (!messages || !Array.isArray(messages)) {
-      return NextResponse.json({ 
-        error: 'Invalid request: messages array required' 
-      }, { status: 400 });
+    // 🔒 SECURITY FIX: Verify authentication
+    const userId = await verifyAuth(req);
+    
+    // Rate limiting
+    const { success, reset } = await ratelimit.limit(userId);
+    
+    if (!success) {
+      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded. Please wait before sending more messages.',
+          retryAfter: `${retryAfter} seconds`
+        }, 
+        { status: 429 }
+      );
     }
 
-    // Call DeepSeek API with proper URL
-    const response = await fetch(DEEPSEEK_API_URL, {
+    const { messages, context } = await req.json();
+
+    if (!messages || !Array.isArray(messages)) {
+      return NextResponse.json({ error: 'Invalid messages format' }, { status: 400 });
+    }
+
+    // Prepare system prompt with context
+    const systemPrompt = `You are a helpful career assistant for JobHunt AI. 
+You help users with job search, resume writing, interview prep, and career advice.
+
+${context ? `\nCurrent Context:\n${JSON.stringify(context, null, 2)}` : ''}
+
+Be concise, practical, and encouraging. Provide specific, actionable advice.`;
+
+    // Call DeepSeek API
+    const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -30,48 +57,46 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         model: "deepseek-chat",
         messages: [
-          { 
-            role: "system", 
-            content: "You are an expert AI Career Coach for JobHunt AI. You help users write compelling cover letters, optimize resumes for ATS systems, and prepare for technical interviews. Be professional, encouraging, and provide actionable advice. Use markdown formatting for better readability." 
-          },
+          { role: "system", content: systemPrompt },
           ...messages
         ],
         temperature: 0.7,
-        max_tokens: 1000,
+        max_tokens: 800,
       }),
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error("DeepSeek API Error:", {
-        status: response.status,
-        statusText: response.statusText,
-        error: errorData
-      });
-      
-      // More helpful error messages
-      if (response.status === 401) {
-        throw new Error('Invalid DeepSeek API key. Please check your .env.local file.');
-      } else if (response.status === 429) {
-        throw new Error('Rate limit exceeded. Please try again in a moment.');
-      } else {
-        throw new Error(errorData.error?.message || `API Error: ${response.statusText}`);
-      }
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      console.error("DeepSeek API Error:", errorText);
+      return NextResponse.json({ 
+        error: 'AI chat failed' 
+      }, { status: 500 });
     }
 
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content;
+    const aiData = await aiResponse.json();
+    const reply = aiData.choices?.[0]?.message?.content;
 
     if (!reply) {
-      throw new Error('No response content from AI');
+      return NextResponse.json({ 
+        error: 'No response generated' 
+      }, { status: 500 });
     }
 
-    return NextResponse.json({ reply });
+    return NextResponse.json({ 
+      success: true,
+      message: reply
+    });
 
   } catch (error: any) {
-    console.error("Chat API Error:", error);
+    if (error.message === 'Unauthorized') {
+      return NextResponse.json({ 
+        error: 'Unauthorized. Please sign in to chat.' 
+      }, { status: 401 });
+    }
+    
+    console.error("Chat Error:", error);
     return NextResponse.json({ 
-      error: error.message || 'Failed to get AI response. Please try again.' 
+      error: error.message || 'Internal server error' 
     }, { status: 500 });
   }
 }
