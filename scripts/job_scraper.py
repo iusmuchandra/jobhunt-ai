@@ -16,6 +16,7 @@
 """
 
 import asyncio
+import threading
 import aiohttp
 import logging
 import sys
@@ -68,32 +69,37 @@ class FirebaseSingleton:
     _instance = None
     _db = None
     _initialized = False
+    _lock = threading.Lock()
     
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(FirebaseSingleton, cls).__new__(cls)
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(FirebaseSingleton, cls).__new__(cls)
         return cls._instance
     
     def initialize(self):
         """Initialize Firebase once"""
         if not self._initialized:
-            try:
-                if not firebase_admin._apps:
-                    cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'serviceAccountKey.json')
-                    if not os.path.exists(cred_path):
-                        logger.error(f"❌ Firebase credentials not found at: {cred_path}")
+            with self.__class__._lock:
+                if not self._initialized:
+                    try:
+                        if not firebase_admin._apps:
+                            cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'serviceAccountKey.json')
+                            if not os.path.exists(cred_path):
+                                logger.error(f"❌ Firebase credentials not found at: {cred_path}")
+                                return False
+
+                            cred = credentials.Certificate(cred_path)
+                            firebase_admin.initialize_app(cred)
+
+                        self._db = firestore.client()
+                        self._initialized = True
+                        logger.info("✅ Connected to Firebase Firestore successfully!")
+                        return True
+                    except Exception as e:
+                        logger.critical(f"❌ Error connecting to Firebase: {e}")
                         return False
-                    
-                    cred = credentials.Certificate(cred_path)
-                    firebase_admin.initialize_app(cred)
-                
-                self._db = firestore.client()
-                self._initialized = True
-                logger.info("✅ Connected to Firebase Firestore successfully!")
-                return True
-            except Exception as e:
-                logger.critical(f"❌ Error connecting to Firebase: {e}")
-                return False
         return True
     
     @property
@@ -208,6 +214,12 @@ class CompanyValidator:
 
 # INTEGRATED: Replaced local list with imported complete list
 TARGETS = COMPLETE_TARGETS
+
+# Filter out Workday companies (scraper not implemented)
+workday_count = len([t for t in TARGETS if t.get('ats') == 'workday'])
+TARGETS = [t for t in TARGETS if t.get('ats') != 'workday']
+if workday_count > 0:
+    logger.info(f"⚠️  Filtered out {workday_count} Workday companies (scraper not implemented)")
 
 # Sort targets by priority for better resource allocation
 TARGETS.sort(key=lambda x: x.get('priority', 3))
@@ -365,34 +377,53 @@ class JobScorer:
         """Check if location is in the USA (STRICT MODE - FIXED)"""
         if not location:
             return True  # Empty = assume remote/flexible
-        
+
         location_lower = location.lower().strip()
-        
-        # 1. Explicitly allow generic remote terms
-        remote_terms = ['remote', 'anywhere', 'distributed', 'global', 'united states', 'usa', 'us', 'u.s.']
-        if any(term == location_lower for term in remote_terms):
-            return True
-        
-        # 2. CRITICAL: Check exclusion list first
-        for excluded in JobScorer.EXCLUDED_LOCATIONS:
-            if excluded in location_lower:
-                logger.debug(f"Location rejected (excluded): {location}")
-                return False
-        
-        # 3. Check allow list (USA states/cities)
-        for usa_loc in JobScorer.USA_LOCATIONS:
-            if usa_loc in location_lower:
+
+        # 0. Split by " or " and "/" to handle multiple location options
+        segments = []
+        for sep in [' or ', '/']:
+            if sep in location_lower:
+                segments.extend([seg.strip() for seg in location_lower.split(sep)])
+                break  # Use first separator found
+        if not segments:
+            segments = [location_lower]
+
+        # Helper to check a single segment
+        def check_segment(seg: str) -> bool:
+            # 1. Explicitly allow generic remote terms
+            remote_terms = ['remote', 'anywhere', 'distributed', 'global', 'united states', 'usa', 'us', 'u.s.']
+            if any(term == seg for term in remote_terms):
                 return True
-        
-        # 4. Check for US state codes with word boundaries
-        for state in JobScorer.US_STATE_CODES:
-            # Match state codes with word boundaries (avoid "ca" in "canada")
-            pattern = rf'\b{state}\b'
-            if re.search(pattern, location_lower):
+
+            # 2. CRITICAL: Check exclusion list first
+            for excluded in JobScorer.EXCLUDED_LOCATIONS:
+                if excluded in seg:
+                    logger.debug(f"Segment rejected (excluded): {seg}")
+                    return False
+
+            # 3. Check allow list (USA states/cities)
+            for usa_loc in JobScorer.USA_LOCATIONS:
+                if usa_loc in seg:
+                    return True
+
+            # 4. Check for US state codes with word boundaries
+            for state in JobScorer.US_STATE_CODES:
+                pattern = rf'\b{state}\b'
+                if re.search(pattern, seg):
+                    return True
+
+            # 5. STRICT FALLBACK: Reject if no positive match
+            logger.debug(f"Segment rejected (no USA match): {seg}")
+            return False
+
+        # Check each segment; if any passes, location is acceptable
+        for seg in segments:
+            if check_segment(seg):
+                logger.debug(f"Location accepted via segment: {seg} (original: {location})")
                 return True
-        
-        # 5. STRICT FALLBACK: Reject if no positive match
-        logger.debug(f"Location rejected (no USA match): {location}")
+
+        logger.debug(f"Location rejected (no segment passed): {location}")
         return False
     
     @staticmethod
@@ -409,7 +440,8 @@ class JobScorer:
                     current_time = datetime.now(timezone.utc)
                     return (current_time - posted_dt).days
                 return int(float(days_ago))
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Failed to parse days_ago '{days_ago[:50]}': {e}")
                 return 999
         return 999
     
@@ -445,22 +477,40 @@ class JobScorer:
         
         for kw in profile.get('keywords', []):
             kw_lower = kw.lower()
-            
-            # Check title (allow partial matches for common terms)
+
+            # Check title - enhanced matching
+            title_match = False
+            desc_match = False
+
+            # Exact phrase match (highest score)
             if kw_lower in title_lower:
-                if ' ' in kw_lower:  # Multi-word
+                if ' ' in kw_lower:  # Multi-word exact phrase
                     keyword_score += 30
-                else:  # Single word
+                else:  # Single word exact
                     keyword_score += 10
                 matched_keywords.append(kw)
-            
-            elif kw_lower in description_lower:
+                title_match = True
+
+            # If no exact match, try partial word matching for multi-word keywords
+            elif ' ' in kw_lower and not title_match:
+                words = kw_lower.split()
+                matched_words = [word for word in words if word in title_lower]
+                if matched_words:
+                    # Partial match: some words from keyword phrase appear in title
+                    keyword_score += 5 * len(matched_words)  # Reduced score for partial
+                    matched_keywords.append(kw)
+                    title_match = True
+                    logger.debug(f"Partial keyword match: {kw} -> {matched_words} in '{job['title']}'")
+
+            # Check description (only if not already matched in title)
+            if not title_match and kw_lower in description_lower:
                 requirements_text = ' '.join(job.get('requirements', []))
                 if kw_lower in requirements_text.lower():
                     keyword_score += 12
                 else:
                     keyword_score += 6
                 matched_keywords.append(kw)
+                desc_match = True
         
         # NEW: Debug Log to track scoring logic
         logger.info(f"🔍 Scoring: {job['title']} | Keywords: {profile.get('keywords', [])} | Matched: {matched_keywords}")
@@ -1777,6 +1827,7 @@ class JobEngine:
         self.metrics = GlobalMetrics()
         self.analytics = AnalyticsEngine()
         self.perf_monitor = PerformanceMonitor()
+        self.companies_processed = 0
     
     async def run(self):
         """Execute the full scraping pipeline"""
@@ -1914,7 +1965,13 @@ class JobEngine:
         )
         
         self.metrics.add_company_metrics(company_metrics, target.get('ats', 'unknown'))
-        
+
+        # Periodic analytics save every 50 companies
+        self.companies_processed += 1
+        if self.companies_processed % 50 == 0 and self.fb.db:
+            logger.info(f"📈 Periodic analytics save after {self.companies_processed} companies")
+            self.analytics.save_analytics_to_firestore(self.fb.db)
+
         # Adaptive delay based on priority and errors
         delay = 0.3 if target.get('priority', 3) <= 2 else 0.5
         if company_metrics.errors > 0:

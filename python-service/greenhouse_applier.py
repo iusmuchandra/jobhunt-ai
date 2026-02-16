@@ -17,6 +17,7 @@ JOBHUNT AI - SMART APPLICATION ENGINE V2.0 (FULLY FIXED)
 import asyncio
 import logging
 import os
+import sys
 import httpx
 import re
 from datetime import datetime
@@ -30,6 +31,23 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+
+def cleanup_old_screenshots(days_old: int = 7):
+    """Delete screenshot files older than specified days"""
+    import os
+    from datetime import datetime
+    from pathlib import Path
+
+    screenshot_dir = Path.cwd()  # Screenshots are saved in current directory
+    for screenshot_file in screenshot_dir.glob("screenshot_*.png"):
+        try:
+            file_stat = screenshot_file.stat()
+            file_age = datetime.now() - datetime.fromtimestamp(file_stat.st_mtime)
+            if file_age.days > days_old:
+                os.remove(screenshot_file)
+                logger.debug(f"Deleted old screenshot: {screenshot_file.name}")
+        except Exception as e:
+            logger.debug(f"Failed to delete screenshot {screenshot_file}: {e}")
 
 # ============================================================================
 # Configuration
@@ -49,12 +67,42 @@ logger = logging.getLogger(__name__)
 
 # Firebase initialization
 if not firebase_admin._apps:
-    cred = credentials.Certificate('serviceAccountKey.json')
+    cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'serviceAccountKey.json')
+    if not os.path.exists(cred_path):
+        logger.error(f"❌ Firebase credentials not found at: {cred_path}")
+        sys.exit(1)
+    cred = credentials.Certificate(cred_path)
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # AI Cache to prevent redundant API calls
 AI_CACHE = {}
+
+# AI Cache with Firestore persistence
+async def get_cached_answer(cache_key: str) -> Optional[str]:
+    """Get cached answer from Firestore"""
+    try:
+        cached_ref = db.collection('ai_cache').document(cache_key)
+        doc = await asyncio.to_thread(cached_ref.get)
+        if doc.exists:
+            data = doc.to_dict()
+            # Optional: check timestamp if we want expiration
+            return data.get('answer')
+    except Exception as e:
+        logger.debug(f"Cache read error: {e}")
+    return None
+
+async def set_cached_answer(cache_key: str, answer: str):
+    """Save answer to Firestore cache"""
+    try:
+        cached_ref = db.collection('ai_cache').document(cache_key)
+        await asyncio.to_thread(cached_ref.set, {
+            'answer': answer,
+            'cachedAt': firestore.SERVER_TIMESTAMP,
+            'question': cache_key[:200]  # store truncated question
+        })
+    except Exception as e:
+        logger.debug(f"Cache write error: {e}")
 
 # ============================================================================
 # Real-time Progress Updates
@@ -90,8 +138,15 @@ async def answer_question_with_ai(question: str, user_profile: Dict, max_retries
     # 1. Check Cache
     cache_key = question.lower().strip()[:100]  # Use first 100 chars as key
     if cache_key in AI_CACHE:
-        logger.info(f"  💾 Cached Answer: {AI_CACHE[cache_key]}")
+        logger.info(f"  💾 Cached Answer (memory): {AI_CACHE[cache_key]}")
         return AI_CACHE[cache_key]
+
+    # Check Firestore persistent cache
+    cached_answer = await get_cached_answer(cache_key)
+    if cached_answer:
+        logger.info(f"  💾 Cached Answer (firestore): {cached_answer}")
+        AI_CACHE[cache_key] = cached_answer
+        return cached_answer
 
     if not DEEPSEEK_API_KEY:
         logger.error("❌ DeepSeek API Key is missing! Check .env.local")
@@ -156,6 +211,8 @@ ANSWER (no explanation, just the answer):"""
                     logger.info(f"  🤖 AI Answer: {answer}")
                     # Update Cache
                     AI_CACHE[cache_key] = answer
+                    # Update Firestore cache (fire and forget)
+                    asyncio.create_task(set_cached_answer(cache_key, answer))
                     return answer
                 elif response.status_code == 429:
                     # Rate limited - wait and retry
@@ -799,7 +856,9 @@ class SmartApplier:
             
             logger.warning("  ⚠️ Submitted but no confirmation found")
             return True
-        except: return False
+        except Exception as e:
+            logger.error(f"Error in submission: {e}")
+            return False
 
     async def submit_application_manual(self, page, app_id: str):
         """Manual review mode"""
@@ -815,7 +874,9 @@ class SmartApplier:
             print("!"*60)
             await asyncio.to_thread(input, "  >> Press ENTER after submitting...")
             return True
-        except: return False
+        except Exception as e:
+            logger.error(f"Error in manual submission: {e}")
+            return False
     
     async def process_application(self, app_data: Dict):
         """Process a single job application"""
@@ -931,6 +992,8 @@ class SmartApplier:
 
 async def main():
     logger.info("🚀 JOBHUNT AI ENGINE STARTED V2.0 (FULLY FIXED)")
+    # Clean up old screenshot files
+    cleanup_old_screenshots(days_old=7)
     applier = SmartApplier()
     await applier.run()
 
