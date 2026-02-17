@@ -273,10 +273,12 @@ def store_jobs(jobs):
         job_doc = job_ref.get()
         
         if not job_doc.exists:
-            batch.set(job_ref, job)
+            # New job — set postedAt for the first time
+            job_data = {**job, 'postedAt': firestore.SERVER_TIMESTAMP}
+            batch.set(job_ref, job_data)
             new_jobs.append(job)
         else:
-            # Update scrape timestamp
+            # Existing job — only update scrape metadata, never reset postedAt
             batch.update(job_ref, {
                 'scrapedAt': firestore.SERVER_TIMESTAMP,
                 'status': 'active'
@@ -1437,24 +1439,12 @@ class AutonomousApplier:
     
     async def _analyze_form_with_deepseek(self, screenshot_b64: str, url: str) -> Optional[Dict]:
         """
-        Use DeepSeek to understand form structure
-        Note: DeepSeek doesn't support vision yet, so we'll use text-based analysis
-        For vision, you'd need to switch to GPT-4V or Claude
+        AI vision form analysis.
+        DeepSeek does not support vision. Requires GPT-4V or Claude Opus for real implementation.
+        Returns None so caller aborts rather than submitting an empty form.
         """
-        try:
-            # Get page HTML instead (DeepSeek workaround)
-            # In production, use GPT-4V for actual vision analysis
-            
-            # For now, return a basic structure
-            return {
-                'fields': [],
-                'needs_resume': True,
-                'submit_button': 'button[type="submit"], input[type="submit"]'
-            }
-            
-        except Exception as e:
-            logger.error(f"Form analysis error: {e}")
-            return None
+        logger.warning(f"AI vision fallback triggered for {url} — not implemented. Aborting.")
+        return None
     
     async def _execute_ai_fill_instructions(
         self, 
@@ -1582,9 +1572,8 @@ class AutonomousApplier:
             return None
     
     async def _handle_custom_questions_ai(self, page: Page, profile: Dict):
-        """Handle custom questions using DeepSeek"""
-        # Implementation similar to your existing greenhouse_applier.py
-        pass
+        """Handle custom questions using AI — not yet implemented."""
+        logger.warning("Custom question handler not implemented — questions will be skipped.")
     
     async def _find_submit_button(self, page: Page):
         """Find the submit button"""
@@ -3411,7 +3400,6 @@ from collections import defaultdict
 import random
 from pathlib import Path
 from difflib import SequenceMatcher
-from urllib.parse import urlparse
 
 # --- NEW IMPORTS FOR INTEGRATION ---
 from salary_extractor import EnhancedSalaryExtractor, extract_salary_from_job
@@ -3512,7 +3500,7 @@ class Config:
     WORKDAY_RATE = float(os.getenv('WORKDAY_RATE', '2'))       
     
     # Batch processing
-    FIREBASE_BATCH_SIZE = 500
+    FIREBASE_BATCH_SIZE = 200  # Max 500 ops per Firestore batch; 200 jobs × 2 writes = 400
     MAX_JOBS_PER_COMPANY = 1000
     
     # Content limits
@@ -3558,150 +3546,7 @@ class CompanyValidator:
             'Scale AI': 'scaleai',
             'Mistral': 'mistralai',
         }
-
-    @staticmethod
-    async def _validate_workday_url(session: aiohttp.ClientSession, target: dict) -> bool:
-        """Validate Workday company URL by trying common subdomains with proper headers"""
-        import socket
-        import re
-        company_id = target['id']
-        company_name = target['name']
-
-        # Alternative company IDs for Workday (common patterns)
-        def get_alternative_ids(base_id: str) -> list:
-            suffixes = ['inc', 'careers', 'jobs', 'career', 'global', 'worldwide']
-            alternatives = [base_id]
-            for suffix in suffixes:
-                alternatives.append(f"{base_id}{suffix}")
-                alternatives.append(f"{base_id}_{suffix}")
-            # Remove duplicates while preserving order
-            seen = set()
-            unique = []
-            for alt in alternatives:
-                if alt not in seen:
-                    seen.add(alt)
-                    unique.append(alt)
-            return unique
-
-        candidate_ids = get_alternative_ids(company_id)
-        # Try both domain patterns: myworkdayjobs.com (modern) and myworkday.com (legacy)
-        domains = ['myworkdayjobs.com', 'myworkday.com']
-        subdomains = ['', 'wd1', 'wd2', 'wd3', 'wd4', 'wd5']
-        # Path patterns - try with candidate_id and generic, including locale variants
-        path_templates = [
-            f"/{{id}}/jobs",
-            f"/{{id}}/careers/jobs",
-            f"/jobs",
-            f"/careers/jobs",
-            f"/en-US/{{id}}/jobs",
-            f"/en/{{id}}/jobs",
-            f"/en-US/jobs",
-            f"/en/jobs",
-            f"/careers",
-            f"/en-US/careers",
-            f"/en/careers",
-        ]
-
-        # Headers to avoid HTTP 500 errors
-        default_headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Referer': 'https://www.google.com/',
-        }
-
-        # Cache for resolved hosts to avoid repeated DNS lookups
-        resolved_hosts = set()
-        attempt_count = 0
-
-        for candidate_id in candidate_ids:
-            for domain in domains:
-                for subdomain in subdomains:
-                    if subdomain:
-                        host = f"{candidate_id}.{subdomain}.{domain}"
-                    else:
-                        host = f"{candidate_id}.{domain}"
-
-                    # Skip if host already failed to resolve
-                    if host in resolved_hosts:
-                        continue
-
-                    # First, check if host resolves to avoid gaierror
-                    try:
-                        socket.gethostbyname(host)
-                        resolved_hosts.add(host)
-                    except socket.gaierror:
-                        logger.debug(f"  🔍 Host does not resolve: {host}")
-                        continue
-                    except Exception as e:
-                        logger.debug(f"  🔍 DNS error for {host}: {e}")
-                        continue
-
-                    # Host resolves, try each path pattern
-                    for template in path_templates:
-                        path = template.format(id=candidate_id)
-                        url = f"https://{host}{path}"
-                        attempt_count += 1
-
-                        # Add delay between attempts to avoid rate limiting
-                        if attempt_count > 1:
-                            await asyncio.sleep(0.5 + random.uniform(0, 0.5))
-
-                        try:
-                            logger.debug(f"Testing Workday URL: {url}")
-                            async with session.get(url, headers=default_headers, timeout=10) as resp:
-                                # Only accept status 200 and verify it's actually a jobs page
-                                if resp.status == 200:
-                                    html = await resp.text()
-                                    # Basic check to ensure it's not an error or maintenance page
-                                    html_lower = html.lower()
-                                    # Reject maintenance pages and suspicious redirects
-                                    if 'maintenance-page' in html_lower or 'community.workday.com' in html_lower:
-                                        logger.debug(f"  ⚠️  Maintenance page detected for {url}")
-                                        continue
-
-                                    # Reject error pages (unless very short, which could be false positive)
-                                    if 'error' in html_lower and len(html) > 1000:
-                                        logger.debug(f"  ⚠️  Error page detected for {url}")
-                                        continue
-
-                                    # Reject very small pages that don't look like job listings
-                                    if len(html) < 1000 and not ('job' in html_lower or 'career' in html_lower):
-                                        logger.debug(f"  ⚠️  Page too small ({len(html)} chars) and no job keywords for {url}")
-                                        continue
-
-                                    # Accept if page contains job-related keywords
-                                    if ('job' in html_lower or 'career' in html_lower or 'workday' in html_lower):
-                                        logger.info(f"✅ Workday URL validated: {url} (status {resp.status})")
-                                        # Store the validated URL pattern for later use
-                                        target['_validated_workday_url'] = url
-                                        # Update company ID if we used an alternative
-                                        if candidate_id != company_id:
-                                            logger.info(f"🔧 Auto-corrected Workday ID for {company_name}: {company_id} → {candidate_id}")
-                                            target['id'] = candidate_id
-                                        return True
-                                    else:
-                                        logger.debug(f"  ⚠️  Page appears to be error or not jobs page: {url}")
-                                else:
-                                    logger.debug(f"  ⚠️  Status {resp.status} for {url}")
-                        except asyncio.TimeoutError:
-                            logger.debug(f"  ⏰ Timeout for {url}")
-                        except aiohttp.ClientConnectorError as e:
-                            logger.debug(f"  🔌 Connection error for {url}: {e}")
-                        except Exception as e:
-                            logger.debug(f"  ❌ Error for {url}: {e}")
-                            continue
-
-        logger.warning(f"❌ No valid Workday subdomain found for {company_name}")
-        return False
-
+    
     @staticmethod
     async def validate_and_correct(session: aiohttp.ClientSession, target: dict) -> bool:
         """Validate and auto-correct company ID if needed"""
@@ -3719,24 +3564,14 @@ class CompanyValidator:
             'greenhouse': f"https://boards-api.greenhouse.io/v1/boards/{target['id']}/jobs",
             'ashby': f"https://api.ashbyhq.com/posting-api/job-board/{target['id']}",
             'lever': f"https://api.lever.co/v0/postings/{target['id']}",
-            'workday': None,  # Special handling
         }
-
+        
         url = ats_urls.get(target['ats'])
         if not url:
-            # Handle Workday validation separately
-            if target['ats'] == 'workday':
-                return await CompanyValidator._validate_workday_url(session, target)
             return False
         
         try:
-            headers = {
-                'User-Agent': random.choice(USER_AGENTS),
-                'Accept': 'application/json',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-            }
+            headers = {'User-Agent': random.choice(USER_AGENTS)}
             async with session.head(url, headers=headers, timeout=10) as resp:
                 return resp.status == 200
         except:
@@ -3748,6 +3583,12 @@ class CompanyValidator:
 
 # INTEGRATED: Replaced local list with imported complete list
 TARGETS = COMPLETE_TARGETS
+
+# Filter out Workday companies (scraper not implemented)
+workday_count = len([t for t in TARGETS if t.get('ats') == 'workday'])
+TARGETS = [t for t in TARGETS if t.get('ats') != 'workday']
+if workday_count > 0:
+    logger.info(f"⚠️  Filtered out {workday_count} Workday companies (scraper not implemented)")
 
 # Sort targets by priority for better resource allocation
 TARGETS.sort(key=lambda x: x.get('priority', 3))
@@ -4128,10 +3969,7 @@ class JobScorer:
             flags.append("🏠 Remote Friendly")
         
         # 8. NEGATIVE KEYWORD FILTER (ENHANCED - FIXED)
-        negative_keywords = profile.get('excludeKeywords', [
-            'intern', 'internship', 'entry level', 'junior', 
-            'designer', 'engineer', 'analyst', 'coordinator'
-        ])
+        negative_keywords = profile.get('excludeKeywords', [])
         
         # Check both title AND description
         full_text = (title_lower + ' ' + description_lower).strip()
@@ -4857,7 +4695,6 @@ class FirebaseManager:
                     'company': job['company'],
                     'location': job.get('location', 'Not specified'),
                     'url': job['link'],
-                    'postedAt': firestore.SERVER_TIMESTAMP,
                     'expiresAt': datetime.now(timezone.utc) + timedelta(days=Config.JOB_EXPIRATION_DAYS),
                     'source': job['source'],
                     'tags': score_data['flags'],
@@ -5287,374 +5124,9 @@ class ScraperFactory:
     
     @staticmethod
     async def _fetch_workday(session: aiohttp.ClientSession, target: dict) -> List[dict]:
-        """Enhanced Workday ATS scraper for *.myworkdayjobs.com and *.myworkday.com domains"""
-        company_id = target['id']
-        company_name = target['name']
-
-        # Try using pre-validated URL if available (from CompanyValidator)
-        if '_validated_workday_url' in target:
-            validated_url = target['_validated_workday_url']
-            logger.info(f"🔍 Using validated Workday URL for {company_name}: {validated_url}")
-            # Parse base URL from validated URL
-            from urllib.parse import urlparse, urlunparse
-            parsed = urlparse(validated_url)
-            # Remove path to get base URL
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-            jobs = await ScraperFactory._try_workday_scrape(session, company_name, base_url, validated_url)
-            if jobs:
-                return jobs
-
-        # Otherwise try all combinations
-        domains = ['myworkdayjobs.com', 'myworkday.com']
-        subdomains = ['', 'wd1', 'wd2', 'wd3', 'wd4', 'wd5']
-        paths = [
-            f"/{company_id}/jobs",
-            f"/{company_id}/careers/jobs",
-            f"/jobs",
-            f"/careers/jobs"
-        ]
-
-        for domain in domains:
-            for subdomain in subdomains:
-                if subdomain:
-                    host = f"{company_id}.{subdomain}.{domain}"
-                else:
-                    host = f"{company_id}.{domain}"
-                base_url = f"https://{host}"
-
-                for path in paths:
-                    jobs_url = f"{base_url}{path}"
-                    logger.info(f"🔍 Scanning {company_name} Workday at {jobs_url}")
-
-                    jobs = await ScraperFactory._try_workday_scrape(session, company_name, base_url, jobs_url)
-                    if jobs:
-                        return jobs
-
-        logger.warning(f"⚠️  Could not scrape Workday jobs for {company_name}")
+        """Workday ATS placeholder"""
+        logger.info(f"ℹ️  Workday scraper not yet implemented for {target['name']}")
         return []
-
-    @staticmethod
-    async def _try_workday_scrape(session: aiohttp.ClientSession, company_name: str, base_url: str, jobs_url: str) -> List[dict]:
-        """Try scraping from a specific Workday URL"""
-        try:
-            headers = {
-                'User-Agent': random.choice(USER_AGENTS),
-                'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-            }
-
-            # First, try to get the page to discover API endpoints
-            async with session.get(jobs_url, headers=headers, timeout=Config.REQUEST_TIMEOUT) as resp:
-                if resp.status != 200:
-                    logger.debug(f"  ⚠️  {company_name} URL {jobs_url} returned status {resp.status}")
-                    return []
-
-                html = await resp.text()
-
-                # Try to extract API configuration from page scripts
-                api_config = ScraperFactory._extract_workday_api_config(html, base_url)
-                if api_config:
-                    jobs = await ScraperFactory._fetch_workday_api(session, company_name, api_config)
-                    if jobs:
-                        logger.info(f"  ✅ Found {len(jobs)} jobs via API for {company_name}")
-                        return jobs
-
-                # Fallback: parse HTML for job listings
-                jobs = ScraperFactory._parse_workday_html(html, company_name, base_url)
-                if jobs:
-                    logger.info(f"  ✅ Found {len(jobs)} jobs via HTML parsing for {company_name}")
-                    return jobs
-
-        except asyncio.TimeoutError:
-            logger.debug(f"  ⏰ Timeout for {company_name} at {jobs_url}")
-        except Exception as e:
-            logger.debug(f"  ❌ Error scanning {company_name} at {jobs_url}: {e}")
-
-        return []
-
-    @staticmethod
-    def _extract_workday_api_config(html: str, base_url: str) -> Optional[dict]:
-        """Extract Workday API configuration from page scripts"""
-        try:
-            # Pattern 1: Look for window.initialData or window.currentControlledLocale
-            patterns = [
-                r'window\.initialData\s*=\s*({.*?});',
-                r'window\.currentControlledLocale\s*=\s*["\']([^"\']+)["\']',
-                r'"tenantName"\s*:\s*["\']([^"\']+)["\']',
-                r'"hostPath"\s*:\s*["\']([^"\']+)["\']',
-                r'"apiEndpoint"\s*:\s*["\']([^"\']+)["\']',
-                r'"tenant"\s*:\s*["\']([^"\']+)["\']',
-                r'tenantName\s*:\s*["\']([^"\']+)["\']',
-                r'tenant\s*:\s*["\']([^"\']+)["\']',
-            ]
-
-            config = {}
-
-            # Find tenant name - try multiple patterns
-            tenant = None
-            tenant_patterns = [
-                r'"tenantName"\s*:\s*["\']([^"\']+)["\']',
-                r'"tenant"\s*:\s*["\']([^"\']+)["\']',
-                r'tenantName\s*:\s*["\']([^"\']+)["\']',
-                r'tenant\s*:\s*["\']([^"\']+)["\']',
-                r'window\.initialData\s*=\s*({.*?});',  # parse JSON later
-            ]
-            for pattern in tenant_patterns:
-                match = re.search(pattern, html, re.IGNORECASE)
-                if match:
-                    # If pattern matches window.initialData, parse JSON
-                    if pattern.startswith('window'):
-                        try:
-                            import json
-                            data = json.loads(match.group(1))
-                            # Try to find tenant in nested structure
-                            if 'tenant' in data:
-                                tenant = data['tenant']
-                            elif 'tenantName' in data:
-                                tenant = data['tenantName']
-                        except:
-                            pass
-                    else:
-                        tenant = match.group(1)
-                    if tenant:
-                        break
-
-            if tenant:
-                config['tenant'] = tenant
-            else:
-                # Fallback: extract tenant from host (first subdomain before dot)
-                from urllib.parse import urlparse
-                parsed = urlparse(base_url)
-                host = parsed.netloc
-                # Remove subdomains like wd1, wd2 etc.
-                parts = host.split('.')
-                # Find the part that is not 'wd1', 'wd2', etc and not 'myworkdayjobs' or 'myworkday'
-                for part in parts:
-                    if not part.startswith('wd') and part not in ['myworkdayjobs', 'myworkday', 'com', 'jobs']:
-                        tenant = part
-                        break
-                if tenant:
-                    config['tenant'] = tenant
-                else:
-                    # Last resort: use first part
-                    config['tenant'] = parts[0] if parts else 'unknown'
-
-            # Find host path
-            host_match = re.search(r'"hostPath"\s*:\s*["\']([^"\']+)["\']', html)
-            if host_match:
-                config['host'] = host_match.group(1)
-            else:
-                # Use base URL host
-                from urllib.parse import urlparse
-                parsed = urlparse(base_url)
-                config['host'] = parsed.netloc
-
-            # Find API endpoint pattern
-            api_match = re.search(r'"apiEndpoint"\s*:\s*["\']([^"\']+)["\']', html)
-            if api_match:
-                config['api_path'] = api_match.group(1)
-            else:
-                # Default API path pattern
-                config['api_path'] = '/wday/cxs/{tenant}/jobs'
-
-            # Check if we have minimal config
-            if 'tenant' in config and 'host' in config:
-                # Construct full API URL
-                api_url = f"https://{config['host']}{config['api_path'].format(tenant=config['tenant'])}"
-                config['api_url'] = api_url
-                return config
-
-        except Exception as e:
-            logger.debug(f"Error extracting Workday API config: {e}")
-
-        return None
-
-    @staticmethod
-    async def _fetch_workday_api(session: aiohttp.ClientSession, company_name: str, config: dict) -> List[dict]:
-        """Fetch jobs from Workday API"""
-        jobs = []
-        limit = 100
-        offset = 0
-        max_jobs = 500  # Safety limit
-
-        try:
-            while len(jobs) < max_jobs:
-                payload = {
-                    "limit": limit,
-                    "offset": offset,
-                    "searchText": "",
-                    "appliedFacets": {},
-                    "sortOrder": "newest"
-                }
-
-                headers = {
-                    'User-Agent': random.choice(USER_AGENTS),
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                }
-
-                async with session.post(config['api_url'], json=payload, headers=headers, timeout=Config.REQUEST_TIMEOUT) as resp:
-                    if resp.status != 200:
-                        logger.debug(f"  ⚠️  Workday API returned status {resp.status}")
-                        break
-
-                    data = await resp.json()
-
-                    # Extract job listings from response
-                    # Workday API structure varies; try common patterns
-                    job_list = data.get('jobPostings', []) or data.get('postings', []) or data.get('jobs', []) or data.get('results', []) or []
-
-                    if not job_list:
-                        # No more jobs
-                        break
-
-                    for job_data in job_list:
-                        try:
-                            job = ScraperFactory._parse_workday_job_data(job_data, company_name, config)
-                            if job:
-                                jobs.append(job)
-                        except Exception as e:
-                            logger.debug(f"Error parsing Workday job: {e}")
-                            continue
-
-                    # Check if we've fetched all jobs
-                    total = data.get('total', 0)
-                    if offset + limit >= total or len(job_list) < limit:
-                        break
-
-                    offset += limit
-
-                    # Rate limiting
-                    await asyncio.sleep(0.5)
-
-        except Exception as e:
-            logger.debug(f"Error fetching from Workday API: {e}")
-
-        return jobs
-
-    @staticmethod
-    def _parse_workday_job_data(job_data: dict, company_name: str, config: dict) -> Optional[dict]:
-        """Parse individual job from Workday API response"""
-        try:
-            # Extract common fields with fallbacks
-            title = job_data.get('title') or job_data.get('jobTitle') or job_data.get('position') or 'Unknown Position'
-            job_id = job_data.get('id') or job_data.get('jobId') or job_data.get('requisitionId') or ''
-
-            # Location
-            location = job_data.get('location') or job_data.get('locations') or job_data.get('workLocation') or 'Remote'
-            if isinstance(location, list):
-                location = ', '.join([loc.get('name', '') if isinstance(loc, dict) else str(loc) for loc in location])
-            elif isinstance(location, dict):
-                location = location.get('name', 'Remote')
-
-            # Description
-            description_html = job_data.get('description') or job_data.get('jobDescription') or job_data.get('content') or ''
-            description = ContentExtractor.extract_description_summary(description_html)
-            requirements = ContentExtractor.extract_requirements(description_html)
-
-            # Salary extraction
-            job_data_for_salary = {
-                'description': description_html,
-                'content': description_html,
-                'title': title,
-                'requirements': requirements
-            }
-            salary = extract_salary_from_job(job_data_for_salary)
-
-            # Posted date
-            posted_date_str = job_data.get('postedDate') or job_data.get('createdDate') or job_data.get('startDate') or ''
-            posted_days_ago = 0
-            if posted_date_str:
-                try:
-                    # Try to parse ISO format
-                    posted_date_str = posted_date_str.replace('Z', '+00:00')
-                    posted_dt = datetime.fromisoformat(posted_date_str)
-                    current_time = datetime.now(timezone.utc)
-                    posted_days_ago = (current_time - posted_dt).days
-                except:
-                    pass
-
-            # Construct job link
-            base_host = config.get('host', 'myworkday.com')
-            job_path = job_data.get('externalPath') or job_data.get('applyPath') or f"/careers/job/{job_id}"
-            link = f"https://{base_host}{job_path}"
-
-            return {
-                'id': job_id,
-                'title': title,
-                'location': location,
-                'link': link,
-                'source': 'Workday',
-                'company': company_name,
-                'description': description,
-                'requirements': requirements,
-                'salary': salary,
-                'posted_days_ago': posted_days_ago,
-            }
-        except Exception as e:
-            logger.debug(f"Error parsing Workday job data: {e}")
-            return None
-
-    @staticmethod
-    def _parse_workday_html(html: str, company_name: str, base_url: str) -> List[dict]:
-        """Fallback HTML parsing for Workday job listings"""
-        jobs = []
-
-        try:
-            # Look for job cards in HTML
-            # Common patterns for Workday job listings
-            job_card_patterns = [
-                r'<div[^>]*class="[^"]*job[^"]*"[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>.*?<span[^>]*class="[^"]*title[^"]*"[^>]*>(.*?)</span>.*?<span[^>]*class="[^"]*location[^"]*"[^>]*>(.*?)</span>',
-                r'<li[^>]*data-career-site-job-id="[^"]*"[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>.*?<h3[^>]*>(.*?)</h3>.*?<div[^>]*class="[^"]*location[^"]*"[^>]*>(.*?)</div>',
-            ]
-
-            for pattern in job_card_patterns:
-                matches = re.findall(pattern, html, re.DOTALL)
-                for match in matches:
-                    try:
-                        href, title, location = match[:3]
-                        # Clean up extracted strings
-                        title = re.sub(r'<[^>]*>', '', title).strip()
-                        location = re.sub(r'<[^>]*>', '', location).strip()
-
-                        # Ensure absolute URL
-                        if href.startswith('/'):
-                            link = f"https://{urlparse(base_url).netloc}{href}"
-                        else:
-                            link = href
-
-                        # Generate job ID from title
-                        job_id = hashlib.md5(f"{company_name}:{title}".encode()).hexdigest()[:16]
-
-                        jobs.append({
-                            'id': job_id,
-                            'title': title,
-                            'location': location,
-                            'link': link,
-                            'source': 'Workday',
-                            'company': company_name,
-                            'description': '',  # Would need separate page fetch
-                            'requirements': [],
-                            'salary': None,
-                            'posted_days_ago': 0,
-                        })
-                    except:
-                        continue
-
-                if jobs:
-                    break
-
-        except Exception as e:
-            logger.debug(f"Error parsing Workday HTML: {e}")
-
-        return jobs
 
 # ===========================================================================
 #                        PERFORMANCE MONITOR (OPTIONAL)
@@ -8079,7 +7551,7 @@ export async function syncJobs() {
 // src/app/api/analyze-job/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
-import { verifyAuth } from '@/lib/auth-middleware';
+import { verifyAuthToken, unauthorizedResponse, forbiddenResponse } from '@/lib/api-auth';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
@@ -8093,48 +7565,57 @@ const ratelimit = new Ratelimit({
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-export async function POST(req: Request) {
-  try {
-    // 🔒 SECURITY FIX: Verify authentication
-    const userId = await verifyAuth(req);
-    
-    // Rate limiting
-    const { success, reset, remaining } = await ratelimit.limit(userId);
-    
-    if (!success) {
-      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      return NextResponse.json(
-        { 
-          error: 'Rate limit exceeded. Try again later.',
-          retryAfter: `${retryAfter} seconds`
-        }, 
-        { status: 429 }
-      );
-    }
+export async function POST(request: Request) {
+  // 1. Clone request before reading body (body can only be read once)
+  const clonedRequest = request.clone();
 
-    const { jobId } = await req.json();
+  // 2. Verify token
+  const uid = await verifyAuthToken(request);
+  if (!uid) return unauthorizedResponse();
 
-    if (!jobId) {
-      return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
-    }
+  // 3. Parse body from clone
+  const body = await clonedRequest.json();
 
-    // Fetch user profile
-    const userDoc = await adminDb.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+  // 4. Verify the userId in the body matches the token (where applicable)
+  if (body.userId && body.userId !== uid) return forbiddenResponse();
 
-    const userData = userDoc.data();
+  // Rate limiting
+  const { success, reset, remaining } = await ratelimit.limit(uid);
 
-    // Fetch job details
-    const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
-    if (!jobDoc.exists) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
-    }
+  if (!success) {
+    const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+    return NextResponse.json(
+      {
+        error: 'Rate limit exceeded. Try again later.',
+        retryAfter: `${retryAfter} seconds`
+      },
+      { status: 429 }
+    );
+  }
 
-    const job = jobDoc.data();
+  const { jobId } = body;
 
-    const prompt = `
+  if (!jobId) {
+    return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
+  }
+
+  // Fetch user profile
+  const userDoc = await adminDb.collection('users').doc(uid).get();
+  if (!userDoc.exists) {
+    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userData = userDoc.data();
+
+  // Fetch job details
+  const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
+  if (!jobDoc.exists) {
+    return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  }
+
+  const job = jobDoc.data();
+
+  const prompt = `
 Analyze this job posting and provide insights:
 
 JOB DETAILS:
@@ -8178,15 +7659,15 @@ Be honest and helpful.
     });
 
     if (!aiResponse.ok) {
-      return NextResponse.json({ 
-        error: 'AI analysis failed' 
+      return NextResponse.json({
+        error: 'AI analysis failed'
       }, { status: 500 });
     }
 
     const aiData = await aiResponse.json();
     const analysis = aiData.choices?.[0]?.message?.content;
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
       analysis,
       job: {
@@ -8194,24 +7675,11 @@ Be honest and helpful.
         company: job?.company
       }
     });
-
-  } catch (error: any) {
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in.' 
-      }, { status: 401 });
-    }
-    
-    console.error("Analyze Job Error:", error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
-    }, { status: 500 });
-  }
 }
 ===== ./src/app/api/chat/route.ts =====
 // src/app/api/chat/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
-import { verifyAuth } from '@/lib/auth-middleware';
+import { verifyAuthToken, unauthorizedResponse, forbiddenResponse } from '@/lib/api-auth';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
@@ -8225,116 +7693,116 @@ const ratelimit = new Ratelimit({
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-export async function POST(req: Request) {
-  try {
-    // 🔒 SECURITY FIX: Verify authentication
-    const userId = await verifyAuth(req);
-    
-    // Rate limiting
-    const { success, reset } = await ratelimit.limit(userId);
-    
-    if (!success) {
-      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      return NextResponse.json(
-        { 
-          error: 'Rate limit exceeded. Please wait before sending more messages.',
-          retryAfter: `${retryAfter} seconds`
-        }, 
-        { status: 429 }
-      );
-    }
+export async function POST(request: Request) {
+  // 1. Clone request before reading body (body can only be read once)
+  const clonedRequest = request.clone();
 
-    const { messages, context } = await req.json();
+  // 2. Verify token
+  const uid = await verifyAuthToken(request);
+  if (!uid) return unauthorizedResponse();
 
-    if (!messages || !Array.isArray(messages)) {
-      return NextResponse.json({ error: 'Invalid messages format' }, { status: 400 });
-    }
+  // 3. Parse body from clone
+  const body = await clonedRequest.json();
 
-    // Prepare system prompt with context
-    const systemPrompt = `You are a helpful career assistant for JobHunt AI. 
+  // 4. Verify the userId in the body matches the token (where applicable)
+  if (body.userId && body.userId !== uid) return forbiddenResponse();
+
+  // Rate limiting
+  const { success, reset } = await ratelimit.limit(uid);
+
+  if (!success) {
+    const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+    return NextResponse.json(
+      {
+        error: 'Rate limit exceeded. Please wait before sending more messages.',
+        retryAfter: `${retryAfter} seconds`
+      },
+      { status: 429 }
+    );
+  }
+
+  const { messages, context } = body;
+
+  if (!messages || !Array.isArray(messages)) {
+    return NextResponse.json({ error: 'Invalid messages format' }, { status: 400 });
+  }
+
+  // Prepare system prompt with context
+  const systemPrompt = `You are a helpful career assistant for JobHunt AI.
 You help users with job search, resume writing, interview prep, and career advice.
 
 ${context ? `\nCurrent Context:\n${JSON.stringify(context, null, 2)}` : ''}
 
 Be concise, practical, and encouraging. Provide specific, actionable advice.`;
 
-    // Call DeepSeek API
-    const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages
-        ],
-        temperature: 0.7,
-        max_tokens: 800,
-      }),
-    });
+  // Call DeepSeek API
+  const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...messages
+      ],
+      temperature: 0.7,
+      max_tokens: 800,
+    }),
+  });
 
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error("DeepSeek API Error:", errorText);
-      return NextResponse.json({ 
-        error: 'AI chat failed' 
-      }, { status: 500 });
-    }
-
-    const aiData = await aiResponse.json();
-    const reply = aiData.choices?.[0]?.message?.content;
-
-    if (!reply) {
-      return NextResponse.json({ 
-        error: 'No response generated' 
-      }, { status: 500 });
-    }
-
-    return NextResponse.json({ 
-      success: true,
-      message: reply
-    });
-
-  } catch (error: any) {
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in to chat.' 
-      }, { status: 401 });
-    }
-    
-    console.error("Chat Error:", error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
+  if (!aiResponse.ok) {
+    const errorText = await aiResponse.text();
+    console.error("DeepSeek API Error:", errorText);
+    return NextResponse.json({
+      error: 'AI chat failed'
     }, { status: 500 });
   }
+
+  const aiData = await aiResponse.json();
+  const reply = aiData.choices?.[0]?.message?.content;
+
+  if (!reply) {
+    return NextResponse.json({
+      error: 'No response generated'
+    }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: reply
+  });
 }
 ===== ./src/app/api/cron/scrape-jobs/route.ts =====
 import { NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { verifyAuthToken } from '@/lib/api-auth';
 
 const execAsync = promisify(exec);
 
 export async function POST(request: Request) {
   try {
-    // Verify cron secret
+    // Verify authentication: either Firebase token or cron secret
+    const uid = await verifyAuthToken(request);
     const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    const token = authHeader?.replace('Bearer ', '');
+
+    if (!uid && token !== process.env.CRON_SECRET) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     console.log('🚀 Starting job scraper...');
-    
+
     // Get the absolute path to the script
     const scriptPath = process.cwd() + '/scripts/job_scraper.py';
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
-    
+
     const { stdout, stderr } = await execAsync(
       `${pythonCommand} "${scriptPath}"`,
-      { 
+      {
         timeout: 600000, // 10 min
         cwd: process.cwd() + '/scripts',
         env: { ...process.env }
@@ -8348,7 +7816,7 @@ export async function POST(request: Request) {
     const jobsMatch = stdout.match(/Total Jobs Found: (\d+)/);
     const matchesMatch = stdout.match(/Total Matches Created: (\d+)/);
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
       message: 'Job scraper completed successfully',
       jobsScraped: jobsMatch ? parseInt(jobsMatch[1]) : 0,
@@ -8358,8 +7826,8 @@ export async function POST(request: Request) {
 
   } catch (error: any) {
     console.error('❌ Scraper failed:', error);
-    
-    return NextResponse.json({ 
+
+    return NextResponse.json({
       error: 'Job scraper failed',
       message: error.message,
       stderr: error.stderr?.slice(-500),
@@ -8370,8 +7838,11 @@ export async function POST(request: Request) {
 
 // Also support GET for testing
 export async function GET(request: Request) {
+  const uid = await verifyAuthToken(request);
   const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const token = authHeader?.replace('Bearer ', '');
+
+  if (!uid && token !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -8384,7 +7855,7 @@ export async function GET(request: Request) {
 // src/app/api/generate-cover-letter/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
-import { verifyAuth } from '@/lib/auth-middleware';
+import { verifyAuthToken, unauthorizedResponse, forbiddenResponse } from '@/lib/api-auth';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
@@ -8398,64 +7869,73 @@ const ratelimit = new Ratelimit({
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-export async function POST(req: Request) {
-  try {
-    // 🔒 SECURITY FIX: Verify authentication FIRST
-    const userId = await verifyAuth(req);
-    
-    // Rate limiting by authenticated user
-    const { success, reset, remaining } = await ratelimit.limit(userId);
-    
-    if (!success) {
-      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      return NextResponse.json(
-        { 
-          error: 'Rate limit exceeded. You can generate 5 cover letters per hour.',
-          retryAfter: `${retryAfter} seconds`
-        }, 
-        { status: 429 }
-      );
-    }
+export async function POST(request: Request) {
+  // 1. Clone request before reading body (body can only be read once)
+  const clonedRequest = request.clone();
 
-    // 🔒 SECURITY FIX: Only get jobId from body - userId comes from token
-    const { jobId } = await req.json();
+  // 2. Verify token
+  const uid = await verifyAuthToken(request);
+  if (!uid) return unauthorizedResponse();
 
-    if (!jobId) {
-      return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
-    }
+  // 3. Parse body from clone
+  const body = await clonedRequest.json();
 
-    // Fetch user's profile (using VERIFIED userId)
-    const userDoc = await adminDb.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+  // 4. Verify the userId in the body matches the token (where applicable)
+  if (body.userId && body.userId !== uid) return forbiddenResponse();
 
-    const userData = userDoc.data();
+  // Rate limiting by authenticated user
+  const { success, reset, remaining } = await ratelimit.limit(uid);
 
-    // Fetch job details
-    const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
-    if (!jobDoc.exists) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
-    }
+  if (!success) {
+    const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+    return NextResponse.json(
+      {
+        error: 'Rate limit exceeded. You can generate 5 cover letters per hour.',
+        retryAfter: `${retryAfter} seconds`
+      },
+      { status: 429 }
+    );
+  }
 
-    const job = jobDoc.data();
+  // 🔒 SECURITY FIX: Only get jobId from body - userId comes from token
+  const { jobId } = body;
 
-    // Build user profile
-    const userProfile = `
+  if (!jobId) {
+    return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
+  }
+
+  // Fetch user's profile (using VERIFIED userId)
+  const userDoc = await adminDb.collection('users').doc(uid).get();
+  if (!userDoc.exists) {
+    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userData = userDoc.data();
+
+  // Fetch job details
+  const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
+  if (!jobDoc.exists) {
+    return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  }
+
+  const job = jobDoc.data();
+
+  // Build user profile
+  const userProfile = `
 Name: ${userData?.displayName || 'Not provided'}
 Email: ${userData?.email || 'Not provided'}
 Current Title: ${userData?.currentTitle || 'Not provided'}
 Years of Experience: ${userData?.yearsOfExperience || 'Not specified'}
 
 Work History:
-${userData?.workHistory?.map((work: any, idx: number) => 
+${userData?.workHistory?.map((work: any, idx: number) =>
   `${idx + 1}. ${work.title} at ${work.company} (${work.startDate} - ${work.current ? 'Present' : work.endDate})`
 ).join('\n') || 'No work history provided'}
 
 Skills: ${userData?.searchKeywords?.join(', ') || 'Not specified'}
     `.trim();
 
-    const prompt = `
+  const prompt = `
 You are an expert cover letter writer. Create a professional, compelling cover letter for this job application.
 
 CANDIDATE'S PROFILE:
@@ -8475,68 +7955,55 @@ Write a professional cover letter (250-350 words) that:
 Use professional but authentic tone. DO NOT use generic templates.
     `;
 
-    // Call DeepSeek API
-    const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: "You are an expert cover letter writer who creates authentic, compelling cover letters."
-          },
-          {
-            role: "user", 
-            content: prompt
-          }
-        ],
-        temperature: 0.8,
-        max_tokens: 1000,
-      }),
-    });
+  // Call DeepSeek API
+  const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert cover letter writer who creates authentic, compelling cover letters."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.8,
+      max_tokens: 1000,
+    }),
+  });
 
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error("DeepSeek API Error:", errorText);
-      return NextResponse.json({ 
-        error: `AI API Error: ${aiResponse.status}` 
-      }, { status: 500 });
-    }
-
-    const aiData = await aiResponse.json();
-    const coverLetter = aiData.choices?.[0]?.message?.content;
-
-    if (!coverLetter) {
-      return NextResponse.json({ 
-        error: 'Failed to generate cover letter' 
-      }, { status: 500 });
-    }
-
-    return NextResponse.json({ 
-      success: true,
-      coverLetter,
-      job: {
-        title: job?.title,
-        company: job?.company
-      }
-    });
-
-  } catch (error: any) {
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in.' 
-      }, { status: 401 });
-    }
-    
-    console.error("Cover Letter Error:", error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
+  if (!aiResponse.ok) {
+    const errorText = await aiResponse.text();
+    console.error("DeepSeek API Error:", errorText);
+    return NextResponse.json({
+      error: `AI API Error: ${aiResponse.status}`
     }, { status: 500 });
   }
+
+  const aiData = await aiResponse.json();
+  const coverLetter = aiData.choices?.[0]?.message?.content;
+
+  if (!coverLetter) {
+    return NextResponse.json({
+      error: 'Failed to generate cover letter'
+    }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    success: true,
+    coverLetter,
+    job: {
+      title: job?.title,
+      company: job?.company
+    }
+  });
 }
 ===== ./src/app/api/sync-jobs/route.ts =====
 import { NextResponse } from 'next/server';
@@ -8546,14 +8013,18 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { adminDb } from '@/lib/firebase-admin';
 import { JobMatchingEngine } from '@/lib/jobs/scraper';
+import { verifyAuthToken, unauthorizedResponse } from '@/lib/api-auth';
 
 const execAsync = promisify(exec);
 
 export async function POST(request: Request) {
   try {
-    // Verify cron secret
+    // Verify authentication: either Firebase token or cron secret
+    const uid = await verifyAuthToken(request);
     const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    const token = authHeader?.replace('Bearer ', '');
+
+    if (!uid && token !== process.env.CRON_SECRET) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -8572,7 +8043,7 @@ export async function POST(request: Request) {
     });
 
     const newJobs = await db.all(`
-      SELECT * FROM jobs 
+      SELECT * FROM jobs
       WHERE found_at > datetime('now', '-1 hour')
       ORDER BY score DESC
     `);
@@ -8609,17 +8080,17 @@ export async function POST(request: Request) {
     const matcher = new JobMatchingEngine();
     await matcher.matchJobsWithUsers(jobsForMatching);
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       jobsScraped: newJobs.length,
-      jobsSynced: jobsForMatching.length 
+      jobsSynced: jobsForMatching.length
     });
 
   } catch (error) {
     console.error('Job sync failed:', error);
-    return NextResponse.json({ 
-      error: 'Job sync failed', 
-      details: error instanceof Error ? error.message : String(error) 
+    return NextResponse.json({
+      error: 'Job sync failed',
+      details: error instanceof Error ? error.message : String(error)
     }, { status: 500 });
   }
 }
@@ -8627,9 +8098,9 @@ export async function POST(request: Request) {
 // src/app/api/tailor/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
+import { verifyAuthToken, unauthorizedResponse, forbiddenResponse } from '@/lib/api-auth';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
-import { verifyAuth } from '@/lib/auth-middleware';
 
 // Initialize rate limiter
 const ratelimit = new Ratelimit({
@@ -8641,72 +8112,82 @@ const ratelimit = new Ratelimit({
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-export async function POST(req: Request) {
-  try {
-    // 🔒 SECURITY FIX: Verify authentication FIRST
-    const userId = await verifyAuth(req);
-    console.log('✅ Authenticated user:', userId);
+export async function POST(request: Request) {
+  // 1. Clone request before reading body (body can only be read once)
+  const clonedRequest = request.clone();
 
-    // Rate limiting - now rate limit by authenticated userId instead of IP
-    const { success, limit, reset, remaining } = await ratelimit.limit(userId);
+  // 2. Verify token
+  const uid = await verifyAuthToken(request);
+  if (!uid) return unauthorizedResponse();
 
-    if (!success) {
-      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      return NextResponse.json(
-        { 
-          error: 'Rate limit exceeded. Please try again later.',
-          retryAfter: `${retryAfter} seconds`,
-          limit: 10,
-          window: '1 hour'
-        }, 
-        { 
-          status: 429,
-          headers: {
-            'X-RateLimit-Limit': '10',
-            'X-RateLimit-Remaining': remaining.toString(),
-            'X-RateLimit-Reset': reset.toString(),
-            'Retry-After': retryAfter.toString()
-          }
+  // 3. Parse body from clone
+  const body = await clonedRequest.json();
+
+  // 4. Verify the userId in the body matches the token (where applicable)
+  if (body.userId && body.userId !== uid) return forbiddenResponse();
+
+  console.log('✅ Authenticated user:', uid);
+
+  // Rate limiting - now rate limit by authenticated userId instead of IP
+  const { success, limit, reset, remaining } = await ratelimit.limit(uid);
+
+  if (!success) {
+    const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+    return NextResponse.json(
+      {
+        error: 'Rate limit exceeded. Please try again later.',
+        retryAfter: `${retryAfter} seconds`,
+        limit: 10,
+        window: '1 hour'
+      },
+      {
+        status: 429,
+        headers: {
+          'X-RateLimit-Limit': '10',
+          'X-RateLimit-Remaining': remaining.toString(),
+          'X-RateLimit-Reset': reset.toString(),
+          'Retry-After': retryAfter.toString()
         }
-      );
-    }
+      }
+    );
+  }
 
-    // 🔒 SECURITY FIX: Get jobId from body, but userId comes from verified token
-    const { jobId, generatePDF } = await req.json();
+  // 🔒 SECURITY FIX: Get jobId from body, but userId comes from verified token
+  const { jobId, generatePDF } = body;
 
-    if (!jobId) {
-      return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
-    }
+  if (!jobId) {
+    return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
+  }
 
-    console.log('🔥 Fetching data for userId:', userId, 'jobId:', jobId);
+  console.log('🔥 Fetching data for userId:', uid, 'jobId:', jobId);
 
-    // 1. Fetch User's Profile Data (using VERIFIED userId)
-    const userDoc = await adminDb.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+  // 1. Fetch User's Profile Data (using VERIFIED userId)
+  const userDoc = await adminDb.collection('users').doc(uid).get();
+  if (!userDoc.exists) {
+    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  }
 
-    const userData = userDoc.data();
-    console.log('✅ User data fetched');
+  const userData = userDoc.data();
+  console.log('✅ User data fetched');
 
-    // Check if user has uploaded a resume for PDF generation
-    if (generatePDF && !userData?.resumeUrl) {
-      return NextResponse.json({ 
-        error: 'No resume found. Please upload your master resume in Settings → Resume first.' 
-      }, { status: 400 });
-    }
+  // Check if user has uploaded a resume for PDF generation
+  if (generatePDF && !userData?.resumeUrl) {
+    return NextResponse.json({
+      error: 'No resume found. Please upload your master resume in Settings → Resume first.'
+    }, { status: 400 });
+  }
 
-    // 2. Fetch Job Details
-    const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
-    if (!jobDoc.exists) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
-    }
+  // 2. Fetch Job Details
+  const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
+  if (!jobDoc.exists) {
+    return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  }
 
-    const job = jobDoc.data();
-    console.log('✅ Job data fetched:', job?.title);
+  const job = jobDoc.data();
+  console.log('✅ Job data fetched:', job?.title);
 
-    // 3. Build user profile from structured data
-    const userProfile = `
+  // 3. Build user profile from structured data
+  const userProfile = `
 Name: ${userData?.displayName || 'Not provided'}
 Email: ${userData?.email || 'Not provided'}
 Phone: ${userData?.phone || 'Not provided'}
@@ -8718,7 +8199,7 @@ Portfolio: ${userData?.portfolioUrl || 'Not provided'}
 GitHub: ${userData?.githubUrl || 'Not provided'}
 
 Work History:
-${userData?.workHistory?.map((work: any, idx: number) => 
+${userData?.workHistory?.map((work: any, idx: number) =>
   `${idx + 1}. ${work.title} at ${work.company}
    Duration: ${work.startDate} - ${work.current ? 'Present' : work.endDate}
    Key Achievements:
@@ -8726,15 +8207,15 @@ ${userData?.workHistory?.map((work: any, idx: number) =>
 ).join('\n\n') || 'No work history provided'}
 
 Education:
-${userData?.education?.map((edu: any) => 
+${userData?.education?.map((edu: any) =>
   `- ${edu.degree} in ${edu.field} from ${edu.school} (${edu.graduationYear})`
 ).join('\n') || 'No education provided'}
 
 Current Skills/Keywords: ${userData?.searchKeywords?.join(', ') || 'Not specified'}
     `.trim();
 
-    // 4. Determine prompt type based on request
-    const prompt = generatePDF ? `
+  // 4. Determine prompt type based on request
+  const prompt = generatePDF ? `
 You are an expert ATS Resume Writer. Your task is to tailor this person's EXISTING resume for THIS SPECIFIC JOB.
 
 CRITICAL: Use the candidate's ACTUAL experience from their profile. Do NOT invent or change their job titles, companies, dates, or core accomplishments. Only reframe and re-emphasize what already exists.
@@ -8757,20 +8238,20 @@ Analyze the candidate's profile and rewrite it to highlight the most relevant ex
 Return a JSON object with this EXACT structure:
 {
   "professionalSummary": "A powerful 3-4 sentence summary that positions the candidate perfectly for this role. Use keywords from the job description naturally. Highlight their ACTUAL relevant achievements.",
-  
+
   "skills": ["skill1", "skill2", "skill3", ...], // 15-20 skills that match the job requirements, prioritized by relevance to this role
-  
+
   "workHistory": [
     {
       "company": "Actual Company Name from Profile",
-      "title": "Actual Job Title from Profile", 
+      "title": "Actual Job Title from Profile",
       "startDate": "Actual Start Date",
       "endDate": "Present" or "Actual End Date",
       "current": true or false,
       "description": "• Rewrite achievements to emphasize relevance to target role\\n• Use metrics and impact from their actual experience\\n• Highlight technical skills that match job requirements\\n• Keep 4-6 bullets per role, focus on most relevant achievements"
     }
   ], // Include ALL work experiences, rewritten to emphasize relevance. Keep dates and titles EXACTLY as shown.
-  
+
   "education": [
     {
       "school": "Actual School Name",
@@ -8828,137 +8309,125 @@ IMPORTANT:
 Output your suggestions now:
     `.trim();
 
-    console.log('🤖 Calling DeepSeek API...');
+  console.log('🤖 Calling DeepSeek API...');
 
-    // 5. Call DeepSeek API
-    const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: generatePDF 
-              ? "You are an expert resume writer who tailors resumes based on candidates' ACTUAL experience. You never invent or falsify information. Return ONLY valid JSON, no markdown formatting."
-              : "You are an expert resume writer and ATS optimization specialist who provides honest, practical advice based on candidates' real experience."
-          },
-          {
-            role: "user", 
-            content: prompt
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: generatePDF ? 4000 : 1000,
-      }),
-    });
-
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error("❌ DeepSeek API Error:", errorText);
-      return NextResponse.json({ 
-        error: `AI API Error: ${aiResponse.status}` 
-      }, { status: 500 });
-    }
-
-    const aiData = await aiResponse.json();
-    const content = aiData.choices?.[0]?.message?.content;
-
-    if (!content) {
-      return NextResponse.json({ 
-        error: 'No content generated from AI' 
-      }, { status: 500 });
-    }
-
-    if (generatePDF) {
-      // Parse JSON response and prepare for PDF generation
-      try {
-        // Clean JSON response (remove markdown code blocks if present)
-        let cleanedContent = content.trim();
-        if (cleanedContent.startsWith('```json')) {
-          cleanedContent = cleanedContent.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        } else if (cleanedContent.startsWith('```')) {
-          cleanedContent = cleanedContent.replace(/```\n?/g, '');
+  // 5. Call DeepSeek API
+  const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        {
+          role: "system",
+          content: generatePDF
+            ? "You are an expert resume writer who tailors resumes based on candidates' ACTUAL experience. You never invent or falsify information. Return ONLY valid JSON, no markdown formatting."
+            : "You are an expert resume writer and ATS optimization specialist who provides honest, practical advice based on candidates' real experience."
+        },
+        {
+          role: "user",
+          content: prompt
         }
-        
-        const resumeData = JSON.parse(cleanedContent);
-        
-        // Add user contact info
-        const completeResumeData = {
-          name: userData?.displayName || 'Your Name',
-          email: userData?.email || '',
-          phone: userData?.phone || '',
-          location: userData?.location || '',
-          linkedin: userData?.linkedinUrl,
-          portfolio: userData?.portfolioUrl,
-          github: userData?.githubUrl,
-          targetJob: {
-            title: job?.title || '',
-            company: job?.company || ''
-          },
-          ...resumeData
-        };
+      ],
+      temperature: 0.7,
+      max_tokens: generatePDF ? 4000 : 1000,
+    }),
+  });
 
-        console.log('✅ Resume data parsed and ready for PDF generation');
-        
-        return NextResponse.json({ 
-          success: true,
-          resumeData: completeResumeData,
-          type: 'pdf'
-        });
-        
-      } catch (parseError: any) {
-        console.error('❌ JSON Parse Error:', parseError);
-        console.error('Raw content:', content);
-        return NextResponse.json({ 
-          error: 'Failed to parse AI response. Please try again.',
-          details: parseError.message
-        }, { status: 500 });
-      }
-    } else {
-      // Return suggestions text
-      console.log('✅ Resume suggestions generated successfully');
-      return NextResponse.json({ 
-        success: true,
-        tailoredContent: content,
-        type: 'suggestions'
-      });
-    }
-
-  } catch (error: any) {
-    // Handle auth errors specifically
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in.' 
-      }, { status: 401 });
-    }
-    
-    console.error("❌ Tailor Error:", error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
+  if (!aiResponse.ok) {
+    const errorText = await aiResponse.text();
+    console.error("❌ DeepSeek API Error:", errorText);
+    return NextResponse.json({
+      error: `AI API Error: ${aiResponse.status}`
     }, { status: 500 });
+  }
+
+  const aiData = await aiResponse.json();
+  const content = aiData.choices?.[0]?.message?.content;
+
+  if (!content) {
+    return NextResponse.json({
+      error: 'No content generated from AI'
+    }, { status: 500 });
+  }
+
+  if (generatePDF) {
+    // Parse JSON response and prepare for PDF generation
+    try {
+      // Clean JSON response (remove markdown code blocks if present)
+      let cleanedContent = content.trim();
+      if (cleanedContent.startsWith('```json')) {
+        cleanedContent = cleanedContent.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      } else if (cleanedContent.startsWith('```')) {
+        cleanedContent = cleanedContent.replace(/```\n?/g, '');
+      }
+
+      const resumeData = JSON.parse(cleanedContent);
+
+      // Add user contact info
+      const completeResumeData = {
+        name: userData?.displayName || 'Your Name',
+        email: userData?.email || '',
+        phone: userData?.phone || '',
+        location: userData?.location || '',
+        linkedin: userData?.linkedinUrl,
+        portfolio: userData?.portfolioUrl,
+        github: userData?.githubUrl,
+        targetJob: {
+          title: job?.title || '',
+          company: job?.company || ''
+        },
+        ...resumeData
+      };
+
+      console.log('✅ Resume data parsed and ready for PDF generation');
+
+      return NextResponse.json({
+        success: true,
+        resumeData: completeResumeData,
+        type: 'pdf'
+      });
+
+    } catch (parseError: any) {
+      console.error('❌ JSON Parse Error:', parseError);
+      console.error('Raw content:', content);
+      return NextResponse.json({
+        error: 'Failed to parse AI response. Please try again.',
+        details: parseError.message
+      }, { status: 500 });
+    }
+  } else {
+    // Return suggestions text
+    console.log('✅ Resume suggestions generated successfully');
+    return NextResponse.json({
+      success: true,
+      tailoredContent: content,
+      type: 'suggestions'
+    });
   }
 }
 ===== ./src/app/api/trigger-scraper/route.ts =====
 // src/app/api/trigger-scraper/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
+import { verifyAuthToken, unauthorizedResponse } from '@/lib/api-auth';
 
 // Use server-only secret (NOT NEXT_PUBLIC_*)
 const SCRAPER_SECRET = process.env.SCRAPER_SECRET || process.env.CRON_SECRET;
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    // 🔒 SECURITY FIX: Verify server secret
-    const authHeader = req.headers.get('Authorization');
+    // 🔒 SECURITY FIX: Verify authentication - either Firebase token or scraper secret
+    const uid = await verifyAuthToken(request);
+    const authHeader = request.headers.get('Authorization');
     const providedSecret = authHeader?.replace('Bearer ', '');
 
-    if (!providedSecret || providedSecret !== SCRAPER_SECRET) {
+    if (!uid && (!providedSecret || providedSecret !== SCRAPER_SECRET)) {
       console.error('❌ Unauthorized scraper trigger attempt');
-      return NextResponse.json({ 
-        error: 'Unauthorized' 
+      return NextResponse.json({
+        error: 'Unauthorized'
       }, { status: 401 });
     }
 
@@ -8969,8 +8438,8 @@ export async function POST(req: Request) {
     const GITHUB_REPO = process.env.GITHUB_REPO || 'iusmuchandra/jobhunt-ai';
 
     if (!GITHUB_TOKEN) {
-      return NextResponse.json({ 
-        error: 'GitHub token not configured' 
+      return NextResponse.json({
+        error: 'GitHub token not configured'
       }, { status: 500 });
     }
 
@@ -8993,7 +8462,7 @@ export async function POST(req: Request) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('GitHub Actions trigger failed:', errorText);
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: 'Failed to trigger scraper',
         details: errorText
       }, { status: response.status });
@@ -9001,15 +8470,15 @@ export async function POST(req: Request) {
 
     console.log('✅ Scraper workflow triggered successfully');
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
       message: 'Job scraper triggered successfully'
     });
 
   } catch (error: any) {
     console.error('Trigger Scraper Error:', error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
+    return NextResponse.json({
+      error: error.message || 'Internal server error'
     }, { status: 500 });
   }
 }
@@ -10117,13 +9586,15 @@ export default function DashboardPage() {
   
   // Real Data State
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
-  const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
+  const [excludeKeywords, setExcludeKeywords] = useState<string[]>([]);
   const [stats, setStats] = useState<UserStats>({
     jobsFound: 0,
     jobsApplied: 0,
     interviews: 0,
   });
-  
+
+  const [totalJobsScanned, setTotalJobsScanned] = useState<number | null>(null);
+
   const [loadingData, setLoadingData] = useState(true);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
@@ -10181,8 +9652,10 @@ export default function DashboardPage() {
       });
 
       await batch.commit();
-      console.log("✅ Reset complete. Reloading...");
-      window.location.reload();
+      console.log("✅ Reset complete. Updating local state...");
+      // Update local state instead of reloading page
+      setJobMatches(prev => prev.map(match => ({...match, viewed: false})));
+      setIsResetting(false);
     } catch (error) {
       console.error("❌ Error resetting views:", error);
       setIsResetting(false);
@@ -10244,10 +9717,8 @@ export default function DashboardPage() {
         
         const hasPreferences = userData?.jobTitles && userData.jobTitles.length > 0;
 
-        if (userData?.excludedKeywords && Array.isArray(userData.excludedKeywords)) {
-           setExcludedKeywords(userData.excludedKeywords);
-        } else if (userData?.negativeFilters && Array.isArray(userData.negativeFilters)) {
-           setExcludedKeywords(userData.negativeFilters);
+        if (userData?.excludeKeywords && Array.isArray(userData.excludeKeywords)) {
+           setExcludeKeywords(userData.excludeKeywords);
         }
 
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
@@ -10352,6 +9823,19 @@ export default function DashboardPage() {
         setJobMatches(matches);
         setShowingGlobalJobs(false);
 
+        // Fetch latest scraper metrics for the jobs scanned count
+        try {
+          const metricsRef = collection(db, 'scraper_metrics');
+          const metricsQuery = query(metricsRef, orderBy('timestamp', 'desc'), limit(1));
+          const metricsSnap = await getDocs(metricsQuery);
+          if (!metricsSnap.empty) {
+            const latest = metricsSnap.docs[0].data();
+            setTotalJobsScanned(latest.total_jobs_scraped || null);
+          }
+        } catch (e) {
+          // Non-critical — scraper_metrics may be empty in development
+        }
+
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
       } finally {
@@ -10366,34 +9850,63 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user) return;
     const shouldPoll = showingGlobalJobs || (jobMatches.length === 0 && !loadingData);
-
     if (!shouldPoll) return;
-    
+
     const pollInterval = setInterval(async () => {
       try {
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
           where('userId', '==', user.uid),
-          limit(1)
+          orderBy('notifiedAt', 'desc'),
+          limit(50)
         );
-        
+
         const snapshot = await getDocs(q);
-        
+
         if (!snapshot.empty) {
-          console.log('✨ Personalized matches are ready! Reloading...');
-          window.location.reload();
+          console.log('✨ Personalized matches ready — updating state');
+
+          // Fetch the actual job data for each match
+          const jobIds = snapshot.docs.map(d => d.data().jobId).filter(Boolean);
+          const chunks: string[][] = [];
+          for (let i = 0; i < jobIds.length; i += 10) chunks.push(jobIds.slice(i, i + 10));
+
+          const jobSnapshots = await Promise.all(
+            chunks.map(chunk =>
+              getDocs(query(collection(db, 'jobs'), where(documentId(), 'in', chunk)))
+            )
+          );
+
+          const jobsMap = new Map<string, any>();
+          jobSnapshots.forEach(snap => snap.docs.forEach(d => jobsMap.set(d.id, d.data())));
+
+          const newMatches = snapshot.docs.map(doc => {
+            const data = doc.data();
+            const job = jobsMap.get(data.jobId);
+            if (!job) return null;
+            return {
+              id: doc.id,
+              jobId: data.jobId,
+              matchScore: data.matchScore || 0,
+              matchReasons: data.matchReasons || [],
+              notifiedAt: data.notifiedAt,
+              viewed: data.viewed || false,
+              job,
+            };
+          }).filter(Boolean);
+
+          setJobMatches(newMatches as any);
+          setShowingGlobalJobs(false);
           clearInterval(pollInterval);
         }
       } catch (error) {
         console.error('Error polling for matches:', error);
       }
-    }, 10000); 
-    
-    const timeout = setTimeout(() => {
-      clearInterval(pollInterval);
-    }, 300000); 
-    
+    }, 10000);
+
+    const timeout = setTimeout(() => clearInterval(pollInterval), 300000);
+
     return () => {
       clearInterval(pollInterval);
       clearTimeout(timeout);
@@ -10405,9 +9918,9 @@ export default function DashboardPage() {
     // 1. Filter Logic (Exclusions + Search)
     let results = jobMatches.filter(match => {
       // Exclusions
-      if (excludedKeywords.length > 0) {
+      if (excludeKeywords.length > 0) {
         const title = match.job.title.toLowerCase();
-        const isExcluded = excludedKeywords.some(keyword => title.includes(keyword.toLowerCase()));
+        const isExcluded = excludeKeywords.some(keyword => title.includes(keyword.toLowerCase()));
         if (isExcluded) return false;
       }
 
@@ -10440,7 +9953,7 @@ export default function DashboardPage() {
         }
     });
 
-  }, [sortBy, searchQuery, jobMatches, excludedKeywords]);
+  }, [sortBy, searchQuery, jobMatches, excludeKeywords]);
 
   const getTier = (score: number) => {
     if (score >= 95) return 'S';
@@ -10496,7 +10009,7 @@ export default function DashboardPage() {
               Hello, <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 animate-gradient-x">{user?.displayName?.split(' ')[0] || 'Hunter'}</span>
             </h1>
             <p className="text-gray-400 text-lg max-w-xl">
-              Your AI agent has scanned <span className="text-white font-bold">8,000+</span> jobs today. Here is your briefing.
+              Your AI agent has scanned {totalJobsScanned !== null ? <span className="text-white font-bold">{totalJobsScanned.toLocaleString()}+</span> : <span className="text-white font-bold">thousands of</span>} jobs today. Here is your briefing.
             </p>
           </div>
           
@@ -10705,7 +10218,7 @@ export default function DashboardPage() {
                         </div>
                         <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
                         <p className="text-gray-500 mb-4 text-center max-w-sm mx-auto">
-                            {excludedKeywords.length > 0 && jobMatches.length > 0 
+                            {excludeKeywords.length > 0 && jobMatches.length > 0 
                             ? `Hidden ${jobMatches.length - filteredAndSortedMatches.length} jobs matching your exclusions.`
                             : "We couldn't find any jobs matching your criteria right now."}
                         </p>
@@ -10887,7 +10400,9 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
+import { UserProfile } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/hooks/useToast';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ArrowRight, Building2, MapPin, Clock, ExternalLink, CheckCircle, Bookmark, Check, Loader2, Zap, Download, DollarSign, Users, Layers, Target, AlertCircle, Sparkles } from 'lucide-react';
 import Link from 'next/link';
@@ -10913,15 +10428,6 @@ interface Job {
   skills?: string[];
 }
 
-interface UserProfile {
-  uid: string;
-  skills: string[];
-  yearsOfExperience?: number;
-  location?: string;
-  desiredSalary?: string;
-  resumeUrl?: string;
-  name?: string;
-}
 
 export default function JobDetailsPage() {
   const { id } = useParams();
@@ -10996,11 +10502,6 @@ export default function JobDetailsPage() {
   const calculateMatchScore = useCallback((job: Job, userProfile: UserProfile): number => {
     if (!job || !userProfile) return 0;
     
-    console.log('Calculating match score:', { 
-      userSkills: userProfile.skills?.length || 0, 
-      jobTags: job.tags?.length || 0,
-      userExp: userProfile.yearsOfExperience 
-    });
     
     // If no user skills, provide a basic score
     if (!userProfile.skills || userProfile.skills.length === 0) {
@@ -11030,7 +10531,6 @@ export default function JobDetailsPage() {
         )
       );
       score += (matchedSkills.length / allJobKeywords.length) * 100 * weights.skills;
-      console.log('Skill match:', matchedSkills.length, '/', allJobKeywords.length);
     }
     
     // 2. Experience Level Match
@@ -11094,7 +10594,6 @@ export default function JobDetailsPage() {
     }
     
     const finalScore = Math.min(Math.round(score), 100);
-    console.log('Final calculated score:', finalScore);
     return finalScore;
   }, [parseSalary]);
 
@@ -11169,7 +10668,6 @@ export default function JobDetailsPage() {
             // Calculate score immediately for instant display
             calculatedScore = calculateMatchScore(jobData, userData);
             setMatchScore(calculatedScore);
-            console.log('Set initial match score:', calculatedScore);
             
             // Provide basic match details immediately
             const basicReasons = [];
@@ -11281,7 +10779,6 @@ export default function JobDetailsPage() {
           
           // Update score if AI provides a better one
           if (data.matchResult.score && data.matchResult.score !== matchScore) {
-            console.log('Updating score from AI:', data.matchResult.score);
             setMatchScore(data.matchResult.score);
           }
         }
@@ -11341,7 +10838,7 @@ export default function JobDetailsPage() {
       
     } catch (error) {
       console.error("Error in application flow:", error);
-      alert('❌ Failed to track application. Please try again.');
+      toast({ title: 'Error', description: 'Failed to track application. Please try again.', variant: 'destructive' });
     } finally {
       setApplying(false);
     }
@@ -11354,7 +10851,7 @@ export default function JobDetailsPage() {
     
     try {
       if (!userProfile?.resumeUrl) {
-        alert("⚠️ Please upload your master resume in Settings → Resume first!");
+        toast({ title: 'Warning', description: 'Please upload your master resume in Settings → Resume first!', variant: 'destructive' });
         router.push('/settings/resume');
         setAutoApplying(false);
         return;
@@ -11381,7 +10878,7 @@ export default function JobDetailsPage() {
       
     } catch (error) {
       console.error("Auto-apply error:", error);
-      alert("❌ Failed to start auto-apply. Please try again.");
+      toast({ title: 'Error', description: 'Failed to start auto-apply. Please try again.', variant: 'destructive' });
     } finally {
       setAutoApplying(false);
     }
@@ -11830,6 +11327,7 @@ export default function JobDetailsPage() {
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from '@/hooks/useToast';
 import { db } from '@/lib/firebase';
 import { 
   collection, 
@@ -11947,7 +11445,7 @@ export default function JobsPage() {
   // Data State
   const [allJobs, setAllJobs] = useState<MatchedJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [negativeFilters, setNegativeFilters] = useState<string[]>([]);
+  const [excludeKeywords, setExcludeKeywords] = useState<string[]>([]);
   const [profileLoaded, setProfileLoaded] = useState(false);
 
   // Pagination State
@@ -12007,7 +11505,7 @@ export default function JobsPage() {
       }
       if (prev.length >= 4) {
         // Optional: limit to 4 items
-        alert("You can compare up to 4 jobs at a time.");
+        toast({ title: 'Limit reached', description: 'You can compare up to 4 jobs at a time.' });
         return prev;
       }
       return [...prev, jobId];
@@ -12022,12 +11520,8 @@ export default function JobsPage() {
           const userDoc = await getDoc(doc(db, 'users', user.uid));
           if (userDoc.exists()) {
             const userData = userDoc.data();
-            const allExclusions = Array.from(new Set([
-              ...(userData.excludedKeywords || []), 
-              ...(userData.excludeKeywords || []),
-              ...(userData.negativeFilters || [])
-            ]));
-            setNegativeFilters(allExclusions);
+            const allExclusions = userData.excludeKeywords || [];
+            setExcludeKeywords(allExclusions);
           }
         } catch (error) {
           console.error("Error fetching user profile:", error);
@@ -12154,25 +11648,17 @@ export default function JobsPage() {
     // FIX 1: Add safety check for job ID
     if (!job.id) return false;
 
-    if (!profileLoaded && negativeFilters.length === 0) return false;
+    if (!profileLoaded && excludeKeywords.length === 0) return false;
     
     // Robust Time Calculations
     const jobDate = getJobDate(job.postedAt);
 
-    // Debugging (Remove in prod)
-    if (statusFilter === 'today' || statusFilter === 'week') {
-      console.log(`Checking Job: ${job.title}`, {
-         jobDate: jobDate.toLocaleString(),
-         isToday: isToday(jobDate),
-         isThisWeek: isThisWeek(jobDate)
-      });
-    }
 
     // 1. Negative Filter
-    if (negativeFilters.length > 0) {
+    if (excludeKeywords.length > 0) {
       const titleLower = job.title.toLowerCase();
       const tagsLower = job.tags?.map(t => t.toLowerCase()) || [];
-      const hasNegative = negativeFilters.some(term => {
+      const hasNegative = excludeKeywords.some(term => {
         const t = term.toLowerCase().trim();
         return t && (titleLower.includes(t) || tagsLower.some(tag => tag.includes(t)));
       });
@@ -13094,6 +12580,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13261,7 +12748,7 @@ export default function AutoApplySetupPage() {
       setTimeout(() => setSaved(false), 3000);
     } catch (error) {
       console.error("Error saving profile:", error);
-      alert("Failed to save.");
+      toast({ title: 'Error', description: 'Failed to save.', variant: 'destructive' });
     } finally {
       setSaving(false);
     }
@@ -13974,6 +13461,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
@@ -14051,7 +13539,7 @@ export default function PreferencesPage() {
         if (docSnap.exists()) {
           const data = docSnap.data();
           setKeywords(data.searchKeywords || []);
-          setExcludeKeywords(data.excludedKeywords || []); // Load exclusions
+          setExcludeKeywords(data.excludeKeywords || []); // Load exclusions
           setSeniority(data.seniorityLevels || []);
           setLocations(data.preferredLocations || []);
           setMinMatchScore(data.minMatchScore || 60);
@@ -14141,7 +13629,7 @@ export default function PreferencesPage() {
       
     } catch (error) {
       console.error("Error saving preferences:", error);
-      alert("Failed to save preferences. Please try again.");
+      toast({ title: 'Error', description: 'Failed to save preferences. Please try again.', variant: 'destructive' });
     } finally {
       setSaving(false);
     }
@@ -16736,6 +16224,7 @@ export { Badge, badgeVariants }
 import * as React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
+import { Slot } from '@radix-ui/react-slot';
 
 const buttonVariants = cva(
   'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
@@ -16774,7 +16263,7 @@ export interface ButtonProps
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? React.Fragment : 'button';
+    const Comp = asChild ? Slot : 'button';
     return (
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
@@ -17460,32 +16949,8 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
+import { UserProfile } from '@/lib/types';
 
-interface UserProfile {
-  uid: string;
-  email: string;
-  displayName: string | null;
-  photoURL: string | null;
-  tier: 'free' | 'pro' | 'premium';
-  onboarding_completed: boolean;
-  profile_completed: boolean;
-  active: boolean;
-  skills?: string[];
-  experience_level?: 'entry' | 'mid' | 'senior' | 'staff';
-  years_of_experience?: number;
-  preferred_roles?: string[];
-  stats?: {                          // ← ADD THIS
-    jobsFound: number;               // ← ADD THIS
-    jobsApplied: number;             // ← ADD THIS
-    interviews: number;              // ← ADD THIS
-  };                                 // ← ADD THIS
-  notifications?: {
-    email: boolean;
-    sms: boolean;
-    push: boolean;
-    in_app: boolean;
-  };
-}
 
 interface AuthContextType {
   user: User | null;
@@ -17719,6 +17184,68 @@ export function withAuth<P extends object>(
 
     return <Component {...props} />;
   };
+}
+===== ./src/hooks/useToast.ts =====
+import { useState, useCallback } from 'react';
+
+interface Toast {
+  id: string;
+  title: string;
+  description?: string;
+  variant?: 'default' | 'destructive';
+}
+
+let toastListeners: ((toasts: Toast[]) => void)[] = [];
+let currentToasts: Toast[] = [];
+
+function notifyListeners() {
+  toastListeners.forEach(l => l([...currentToasts]));
+}
+
+export function toast(options: Omit<Toast, 'id'>) {
+  const id = Math.random().toString(36).slice(2);
+  currentToasts = [...currentToasts, { ...options, id }];
+  notifyListeners();
+  setTimeout(() => {
+    currentToasts = currentToasts.filter(t => t.id !== id);
+    notifyListeners();
+  }, 4000);
+}
+
+export function useToast() {
+  const [toasts, setToasts] = useState<Toast[]>(currentToasts);
+
+  const subscribe = useCallback(() => {
+    toastListeners.push(setToasts);
+    return () => {
+      toastListeners = toastListeners.filter(l => l !== setToasts);
+    };
+  }, []);
+
+  return { toasts, toast, subscribe };
+}
+===== ./src/lib/api-auth.ts =====
+import { adminAuth } from '@/lib/firebase-admin';
+
+export async function verifyAuthToken(request: Request): Promise<string | null> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) return null;
+
+    const token = authHeader.split('Bearer ')[1];
+    const decoded = await adminAuth.verifyIdToken(token);
+    return decoded.uid;
+  } catch {
+    return null;
+  }
+}
+
+export function unauthorizedResponse() {
+  return Response.json({ error: 'Unauthorized' }, { status: 401 });
+}
+
+export function forbiddenResponse() {
+  return Response.json({ error: 'Forbidden' }, { status: 403 });
 }
 ===== ./src/lib/api-client.ts =====
 // src/lib/api-client.ts - Helper for making authenticated API calls
@@ -19091,7 +18618,7 @@ import { Redis } from "@upstash/redis";
 
 export const ratelimit = new Ratelimit({
   redis: Redis.fromEnv(),
-  limiter: Ratelimit.slidingWindow(10, "1 h"),
+  limiter: Ratelimit.slidingWindow(100, "1 h"),
 });
 ===== ./src/lib/stripe.ts =====
 import Stripe from 'stripe';
@@ -19261,33 +18788,51 @@ export function formatAmount(amount: number, currency: string = 'usd'): string {
   }).format(amount / 100);
 }
 ===== ./src/lib/types.ts =====
-// lib/types.ts
+// src/lib/types.ts — Single canonical UserProfile interface
+
 export interface UserProfile {
-  // Basic Info
+  // Auth & Identity
+  uid: string;
   email: string;
-  displayName: string;
+  displayName: string | null;
+  photoURL?: string | null;
   phone?: string;
-  location?: string;
-  
+
+  // Subscription
+  tier: 'free' | 'pro' | 'premium' | 'enterprise';
+  subscriptionStatus?: string;
+  subscriptionId?: string;
+  stripeCustomerId?: string;
+  currentPeriodEnd?: any;
+
+  // Onboarding
+  onboarding_completed: boolean;
+  profile_completed: boolean;
+  active: boolean;
+
   // Professional Info
   currentTitle?: string;
   yearsOfExperience?: number;
+  location?: string;
   linkedinUrl?: string;
   portfolioUrl?: string;
   githubUrl?: string;
-  
+  skills?: string[];
+  experience_level?: 'entry' | 'mid' | 'senior' | 'staff';
+
   // Job Search Preferences
   searchKeywords: string[];
+  excludeKeywords: string[];  // CANONICAL — use this everywhere, not excludedKeywords
   seniorityLevels: string[];
   preferredLocations: string[];
   minMatchScore: number;
-  
-  // Auto-Apply Data
+
+  // Resume & Application
   resumeUrl?: string;
   resumeName?: string;
   coverLetterTemplate?: string;
-  
-  // Work History (for forms)
+
+  // Work History
   workHistory?: {
     company: string;
     title: string;
@@ -19296,7 +18841,7 @@ export interface UserProfile {
     current: boolean;
     description: string;
   }[];
-  
+
   // Education
   education?: {
     school: string;
@@ -19304,14 +18849,43 @@ export interface UserProfile {
     field: string;
     graduationYear: string;
   }[];
-  
-  // Additional Info
+
+  // EEO / Additional
   eligibleToWorkInUS?: boolean;
   requiresSponsorship?: boolean;
   veteranStatus?: string;
   ethnicity?: string;
   gender?: string;
   disability?: string;
+
+  // Stats
+  stats?: {
+    jobsFound: number;
+    jobsApplied: number;
+    interviews: number;
+  };
+
+  // Notifications
+  notifications?: {
+    email: boolean;
+    sms: boolean;
+    push: boolean;
+    in_app: boolean;
+  };
+
+  // AI Settings
+  aiSettings?: {
+    matchThreshold?: number;
+    resumeAnalyzed?: boolean;
+    lastResumeUpdate?: any;
+  };
+  resumeAnalysis?: any;
+
+  // Timestamps
+  createdAt?: any;
+  updatedAt?: any;
+  preferencesUpdatedAt?: any;
+  desiredSalary?: string;
 }
 ===== ./src/lib/utils.ts =====
 import { clsx, type ClassValue } from "clsx"
@@ -19321,6 +18895,31 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+===== ./src/middleware.ts =====
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+const PUBLIC_ROUTES = ['/', '/login', '/signup', '/pricing', '/api/stripe/webhook'];
+
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get('__session');
+  const { pathname } = request.nextUrl;
+
+  const isPublic = PUBLIC_ROUTES.some(r => pathname.startsWith(r));
+  const isNextInternal = pathname.startsWith('/_next') || pathname.startsWith('/favicon');
+
+  if (!token && !isPublic && !isNextInternal) {
+    const loginUrl = new URL('/login', request.url);
+    loginUrl.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+};
 ===== ./tailwind.config.ts =====
 import type { Config } from 'tailwindcss';
 

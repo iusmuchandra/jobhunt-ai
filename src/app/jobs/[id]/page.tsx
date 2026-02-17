@@ -290,7 +290,7 @@ export default function JobDetailsPage() {
             const basicReasons = [];
             if (calculatedScore >= 70) {
               basicReasons.push(`Strong ${calculatedScore}% match based on your profile`);
-              if (userData.skills?.length > 0) {
+              if (userData.skills && userData.skills.length > 0) {
                 basicReasons.push(`Your skills align with ${jobData.tags?.length || 0} required technologies`);
               }
             } else if (calculatedScore >= 50) {
