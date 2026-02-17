@@ -12,11 +12,7 @@ import {
   getDocs, 
   addDoc, 
   serverTimestamp, 
-  limit,
   documentId,
-  QueryDocumentSnapshot,
-  DocumentData,
-  startAfter,
   doc,
   getDoc
 } from 'firebase/firestore';
@@ -129,9 +125,6 @@ export default function JobsPage() {
 
   // Pagination State
   const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const [cursors, setCursors] = useState<QueryDocumentSnapshot<DocumentData>[]>([]);
-  
   // Comparison State
   const [compareList, setCompareList] = useState<string[]>([]);
 
@@ -219,71 +212,49 @@ export default function JobsPage() {
     fetchUserProfile();
   }, [user]);
 
-  // --- 2. Main Fetch Function ---
-  const fetchMatchedJobs = useCallback(async (targetPage: number) => {
+  // --- 2. Main Fetch — loads ALL matched jobs once, client-side pagination after ---
+  const fetchAllMatchedJobs = useCallback(async () => {
     if (!user) return;
     setLoading(true);
 
     try {
-      let matchesQuery = query(
+      // Fetch ALL matches for this user — no limit, so sort/filter works across everything
+      const matchesQuery = query(
         collection(db, 'user_job_matches'),
         where('userId', '==', user.uid),
         orderBy('matchScore', 'desc'),
-        orderBy('notifiedAt', 'desc'),
-        limit(JOBS_PER_PAGE)
+        orderBy('notifiedAt', 'desc')
       );
 
-      if (targetPage > 1) {
-        const cursorDoc = cursors[targetPage - 2];
-        if (cursorDoc) matchesQuery = query(matchesQuery, startAfter(cursorDoc));
-      }
-
       const matchesSnapshot = await getDocs(matchesQuery);
-      
+
       if (matchesSnapshot.empty) {
-        setJobs([]);
-        setHasMore(false);
+        setAllJobs([]);
         setLoading(false);
         return;
       }
 
-      const lastVisible = matchesSnapshot.docs[matchesSnapshot.docs.length - 1];
-      setCursors(prev => {
-        const newCursors = [...prev];
-        newCursors[targetPage - 1] = lastVisible;
-        return newCursors;
-      });
-
-      // Explicitly cast the mapped data to ensure TypeScript knows jobId exists
       const matchesData: FirestoreMatchData[] = matchesSnapshot.docs.map(doc => {
         const data = doc.data();
-        return {
-          matchId: doc.id,
-          jobId: data.jobId,
-          ...data
-        } as FirestoreMatchData;
+        return { matchId: doc.id, jobId: data.jobId, ...data } as FirestoreMatchData;
       });
 
       const jobIds = matchesData.map(m => m.jobId).filter(Boolean);
-      
-      if (jobIds.length === 0) {
-        setJobs([]);
-        setLoading(false);
-        return;
-      }
+      if (jobIds.length === 0) { setAllJobs([]); setLoading(false); return; }
 
+      // Firestore 'in' queries are limited to 10 per chunk — batch them all
       const jobChunks = chunkArray(jobIds, 10);
-      const jobsPromises = jobChunks.map(chunk =>
-        getDocs(query(collection(db, 'jobs'), where(documentId(), 'in', chunk)))
+      const jobsSnapshots = await Promise.all(
+        jobChunks.map(chunk =>
+          getDocs(query(collection(db, 'jobs'), where(documentId(), 'in', chunk)))
+        )
       );
 
-      const jobsSnapshots = await Promise.all(jobsPromises);
       const allJobDocs = jobsSnapshots.flatMap(snap => snap.docs);
-      
-      const matchedJobs = allJobDocs.map(jobDoc => {
+
+      const matchedJobs: MatchedJob[] = allJobDocs.map(jobDoc => {
         const jobData = jobDoc.data();
         const match = matchesData.find(m => m.jobId === jobDoc.id);
-        
         return {
           ...jobData,
           id: jobDoc.id,
@@ -306,27 +277,30 @@ export default function JobsPage() {
         } as MatchedJob;
       });
 
+      // Default order: best match score descending
       matchedJobs.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
-
-      setJobs(matchedJobs);
-      setHasMore(matchesSnapshot.docs.length === JOBS_PER_PAGE);
-      setPage(targetPage);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      setAllJobs(matchedJobs);
 
     } catch (error) {
       console.error('Error fetching jobs:', error);
     } finally {
       setLoading(false);
     }
-  }, [user, cursors, JOBS_PER_PAGE]);
-
-  useEffect(() => {
-    if (user && page === 1 && jobs.length === 0) fetchMatchedJobs(1);
   }, [user]);
 
-  // --- Handlers ---
-  const handleNextPage = () => { if (hasMore) fetchMatchedJobs(page + 1); };
-  const handlePrevPage = () => { if (page > 1) fetchMatchedJobs(page - 1); };
+  useEffect(() => {
+    if (user && allJobs.length === 0) fetchAllMatchedJobs();
+  }, [user]);
+
+  // --- Client-side page handlers (instant — no Firestore calls) ---
+  const handleNextPage = () => {
+    setPage(prev => prev + 1);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const handlePrevPage = () => {
+    setPage(prev => Math.max(1, prev - 1));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const addTestJob = async () => {
     try {
@@ -339,17 +313,17 @@ export default function JobsPage() {
         tags: ["Python", "TensorFlow", "React"],
         postedAt: serverTimestamp(),
       });
-      fetchMatchedJobs(1);
+      fetchAllMatchedJobs();
     } catch (error) {
       console.error("Error adding job:", error);
     }
   };
 
-  // Calculate unique companies for the dropdown — sorted alphabetically across all loaded jobs
-  const uniqueCompanies = Array.from(new Set(jobs.map(job => job.company).filter(Boolean))).sort();
+  // Unique companies derived from ALL jobs — not just current page
+  const uniqueCompanies = Array.from(new Set(allJobs.map(job => job.company).filter(Boolean))).sort();
 
-  // --- Filter Logic (Enhanced with Robust Time Parsing) ---
-  const filteredJobs = jobs.filter(job => {
+  // --- Filter + Sort across ALL jobs, then paginate client-side ---
+  const filteredJobs = allJobs.filter(job => {
     // FIX 1: Add safety check for job ID
     if (!job.id) return false;
 
@@ -429,6 +403,14 @@ export default function JobsPage() {
     return (b.matchScore || 0) - (a.matchScore || 0);
   });
 
+  // Client-side pagination slice
+  const totalPages = Math.ceil(filteredJobs.length / JOBS_PER_PAGE);
+  const hasMore = page < totalPages;
+  const paginatedJobs = filteredJobs.slice((page - 1) * JOBS_PER_PAGE, page * JOBS_PER_PAGE);
+
+  // Reset to page 1 whenever filters/sort change
+  // (handled via useEffect below)
+
   const getTierColor = (score: number) => {
     if (score >= 95) return 'text-yellow-400';
     if (score >= 85) return 'text-green-400';
@@ -444,7 +426,12 @@ export default function JobsPage() {
     setMatchScoreFilter('all');
     setStatusFilter('all');
     setSortBy('match');
+    setPage(1);
   };
+
+  // Reset to page 1 whenever any filter or sort changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setPage(1); }, [searchTerm, salaryFilter, companyFilter, remoteFilter, matchScoreFilter, statusFilter, sortBy]);
 
   return (
     <div className="min-h-screen bg-[#050505] text-white relative font-sans selection:bg-blue-500/30">
@@ -603,6 +590,9 @@ export default function JobsPage() {
                 <div className="flex items-center gap-4 flex-wrap">
                   <p className="text-gray-400 text-sm font-medium">
                     Found <span className="text-white">{filteredJobs.length}</span> matches
+                    {totalPages > 1 && (
+                      <span className="text-gray-600 ml-2 text-xs">· page {page} of {totalPages}</span>
+                    )}
                   </p>
                   {statusFilter === 'new' && (
                     <span className="px-3 py-1 bg-blue-500/20 text-blue-300 text-xs font-bold rounded-full border border-blue-500/30">
@@ -665,7 +655,7 @@ export default function JobsPage() {
 
               {/* Holographic Job Cards */}
               <div className="grid grid-cols-1 gap-5">
-                {filteredJobs.map((job) => (
+                {paginatedJobs.map((job) => (
                   // FIX 2: Added prefetch={false}
                   <Link key={job.id} href={`/jobs/${job.id}`} prefetch={false}>
                     <div 
