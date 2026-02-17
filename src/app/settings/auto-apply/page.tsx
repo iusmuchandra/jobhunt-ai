@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -171,7 +172,7 @@ export default function AutoApplySetupPage() {
       setTimeout(() => setSaved(false), 3000);
     } catch (error) {
       console.error("Error saving profile:", error);
-      alert("Failed to save.");
+      toast({ title: 'Error', description: 'Failed to save.', variant: 'destructive' });
     } finally {
       setSaving(false);
     }

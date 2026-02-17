@@ -1,7 +1,7 @@
 // src/app/api/analyze-job/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
-import { verifyAuth } from '@/lib/auth-middleware';
+import { verifyAuthToken, unauthorizedResponse, forbiddenResponse } from '@/lib/api-auth';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
@@ -15,48 +15,57 @@ const ratelimit = new Ratelimit({
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-export async function POST(req: Request) {
-  try {
-    // 🔒 SECURITY FIX: Verify authentication
-    const userId = await verifyAuth(req);
-    
-    // Rate limiting
-    const { success, reset, remaining } = await ratelimit.limit(userId);
-    
-    if (!success) {
-      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      return NextResponse.json(
-        { 
-          error: 'Rate limit exceeded. Try again later.',
-          retryAfter: `${retryAfter} seconds`
-        }, 
-        { status: 429 }
-      );
-    }
+export async function POST(request: Request) {
+  // 1. Clone request before reading body (body can only be read once)
+  const clonedRequest = request.clone();
 
-    const { jobId } = await req.json();
+  // 2. Verify token
+  const uid = await verifyAuthToken(request);
+  if (!uid) return unauthorizedResponse();
 
-    if (!jobId) {
-      return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
-    }
+  // 3. Parse body from clone
+  const body = await clonedRequest.json();
 
-    // Fetch user profile
-    const userDoc = await adminDb.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+  // 4. Verify the userId in the body matches the token (where applicable)
+  if (body.userId && body.userId !== uid) return forbiddenResponse();
 
-    const userData = userDoc.data();
+  // Rate limiting
+  const { success, reset, remaining } = await ratelimit.limit(uid);
 
-    // Fetch job details
-    const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
-    if (!jobDoc.exists) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
-    }
+  if (!success) {
+    const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+    return NextResponse.json(
+      {
+        error: 'Rate limit exceeded. Try again later.',
+        retryAfter: `${retryAfter} seconds`
+      },
+      { status: 429 }
+    );
+  }
 
-    const job = jobDoc.data();
+  const { jobId } = body;
 
-    const prompt = `
+  if (!jobId) {
+    return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
+  }
+
+  // Fetch user profile
+  const userDoc = await adminDb.collection('users').doc(uid).get();
+  if (!userDoc.exists) {
+    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userData = userDoc.data();
+
+  // Fetch job details
+  const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
+  if (!jobDoc.exists) {
+    return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  }
+
+  const job = jobDoc.data();
+
+  const prompt = `
 Analyze this job posting and provide insights:
 
 JOB DETAILS:
@@ -100,15 +109,15 @@ Be honest and helpful.
     });
 
     if (!aiResponse.ok) {
-      return NextResponse.json({ 
-        error: 'AI analysis failed' 
+      return NextResponse.json({
+        error: 'AI analysis failed'
       }, { status: 500 });
     }
 
     const aiData = await aiResponse.json();
     const analysis = aiData.choices?.[0]?.message?.content;
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
       analysis,
       job: {
@@ -116,17 +125,4 @@ Be honest and helpful.
         company: job?.company
       }
     });
-
-  } catch (error: any) {
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in.' 
-      }, { status: 401 });
-    }
-    
-    console.error("Analyze Job Error:", error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
-    }, { status: 500 });
-  }
 }

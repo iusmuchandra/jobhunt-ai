@@ -1,7 +1,7 @@
 // src/app/api/generate-cover-letter/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/lib/firebase-admin';
-import { verifyAuth } from '@/lib/auth-middleware';
+import { verifyAuthToken, unauthorizedResponse, forbiddenResponse } from '@/lib/api-auth';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
 
@@ -15,64 +15,73 @@ const ratelimit = new Ratelimit({
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-export async function POST(req: Request) {
-  try {
-    // 🔒 SECURITY FIX: Verify authentication FIRST
-    const userId = await verifyAuth(req);
-    
-    // Rate limiting by authenticated user
-    const { success, reset, remaining } = await ratelimit.limit(userId);
-    
-    if (!success) {
-      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
-      return NextResponse.json(
-        { 
-          error: 'Rate limit exceeded. You can generate 5 cover letters per hour.',
-          retryAfter: `${retryAfter} seconds`
-        }, 
-        { status: 429 }
-      );
-    }
+export async function POST(request: Request) {
+  // 1. Clone request before reading body (body can only be read once)
+  const clonedRequest = request.clone();
 
-    // 🔒 SECURITY FIX: Only get jobId from body - userId comes from token
-    const { jobId } = await req.json();
+  // 2. Verify token
+  const uid = await verifyAuthToken(request);
+  if (!uid) return unauthorizedResponse();
 
-    if (!jobId) {
-      return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
-    }
+  // 3. Parse body from clone
+  const body = await clonedRequest.json();
 
-    // Fetch user's profile (using VERIFIED userId)
-    const userDoc = await adminDb.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
+  // 4. Verify the userId in the body matches the token (where applicable)
+  if (body.userId && body.userId !== uid) return forbiddenResponse();
 
-    const userData = userDoc.data();
+  // Rate limiting by authenticated user
+  const { success, reset, remaining } = await ratelimit.limit(uid);
 
-    // Fetch job details
-    const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
-    if (!jobDoc.exists) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
-    }
+  if (!success) {
+    const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+    return NextResponse.json(
+      {
+        error: 'Rate limit exceeded. You can generate 5 cover letters per hour.',
+        retryAfter: `${retryAfter} seconds`
+      },
+      { status: 429 }
+    );
+  }
 
-    const job = jobDoc.data();
+  // 🔒 SECURITY FIX: Only get jobId from body - userId comes from token
+  const { jobId } = body;
 
-    // Build user profile
-    const userProfile = `
+  if (!jobId) {
+    return NextResponse.json({ error: 'Missing jobId' }, { status: 400 });
+  }
+
+  // Fetch user's profile (using VERIFIED userId)
+  const userDoc = await adminDb.collection('users').doc(uid).get();
+  if (!userDoc.exists) {
+    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userData = userDoc.data();
+
+  // Fetch job details
+  const jobDoc = await adminDb.collection('jobs').doc(jobId).get();
+  if (!jobDoc.exists) {
+    return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  }
+
+  const job = jobDoc.data();
+
+  // Build user profile
+  const userProfile = `
 Name: ${userData?.displayName || 'Not provided'}
 Email: ${userData?.email || 'Not provided'}
 Current Title: ${userData?.currentTitle || 'Not provided'}
 Years of Experience: ${userData?.yearsOfExperience || 'Not specified'}
 
 Work History:
-${userData?.workHistory?.map((work: any, idx: number) => 
+${userData?.workHistory?.map((work: any, idx: number) =>
   `${idx + 1}. ${work.title} at ${work.company} (${work.startDate} - ${work.current ? 'Present' : work.endDate})`
 ).join('\n') || 'No work history provided'}
 
 Skills: ${userData?.searchKeywords?.join(', ') || 'Not specified'}
     `.trim();
 
-    const prompt = `
+  const prompt = `
 You are an expert cover letter writer. Create a professional, compelling cover letter for this job application.
 
 CANDIDATE'S PROFILE:
@@ -92,66 +101,53 @@ Write a professional cover letter (250-350 words) that:
 Use professional but authentic tone. DO NOT use generic templates.
     `;
 
-    // Call DeepSeek API
-    const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: "You are an expert cover letter writer who creates authentic, compelling cover letters."
-          },
-          {
-            role: "user", 
-            content: prompt
-          }
-        ],
-        temperature: 0.8,
-        max_tokens: 1000,
-      }),
-    });
+  // Call DeepSeek API
+  const aiResponse = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert cover letter writer who creates authentic, compelling cover letters."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.8,
+      max_tokens: 1000,
+    }),
+  });
 
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error("DeepSeek API Error:", errorText);
-      return NextResponse.json({ 
-        error: `AI API Error: ${aiResponse.status}` 
-      }, { status: 500 });
-    }
-
-    const aiData = await aiResponse.json();
-    const coverLetter = aiData.choices?.[0]?.message?.content;
-
-    if (!coverLetter) {
-      return NextResponse.json({ 
-        error: 'Failed to generate cover letter' 
-      }, { status: 500 });
-    }
-
-    return NextResponse.json({ 
-      success: true,
-      coverLetter,
-      job: {
-        title: job?.title,
-        company: job?.company
-      }
-    });
-
-  } catch (error: any) {
-    if (error.message === 'Unauthorized') {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in.' 
-      }, { status: 401 });
-    }
-    
-    console.error("Cover Letter Error:", error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
+  if (!aiResponse.ok) {
+    const errorText = await aiResponse.text();
+    console.error("DeepSeek API Error:", errorText);
+    return NextResponse.json({
+      error: `AI API Error: ${aiResponse.status}`
     }, { status: 500 });
   }
+
+  const aiData = await aiResponse.json();
+  const coverLetter = aiData.choices?.[0]?.message?.content;
+
+  if (!coverLetter) {
+    return NextResponse.json({
+      error: 'Failed to generate cover letter'
+    }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    success: true,
+    coverLetter,
+    job: {
+      title: job?.title,
+      company: job?.company
+    }
+  });
 }

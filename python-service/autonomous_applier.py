@@ -501,24 +501,12 @@ class AutonomousApplier:
     
     async def _analyze_form_with_deepseek(self, screenshot_b64: str, url: str) -> Optional[Dict]:
         """
-        Use DeepSeek to understand form structure
-        Note: DeepSeek doesn't support vision yet, so we'll use text-based analysis
-        For vision, you'd need to switch to GPT-4V or Claude
+        AI vision form analysis.
+        DeepSeek does not support vision. Requires GPT-4V or Claude Opus for real implementation.
+        Returns None so caller aborts rather than submitting an empty form.
         """
-        try:
-            # Get page HTML instead (DeepSeek workaround)
-            # In production, use GPT-4V for actual vision analysis
-            
-            # For now, return a basic structure
-            return {
-                'fields': [],
-                'needs_resume': True,
-                'submit_button': 'button[type="submit"], input[type="submit"]'
-            }
-            
-        except Exception as e:
-            logger.error(f"Form analysis error: {e}")
-            return None
+        logger.warning(f"AI vision fallback triggered for {url} — not implemented. Aborting.")
+        return None
     
     async def _execute_ai_fill_instructions(
         self, 
@@ -646,9 +634,8 @@ class AutonomousApplier:
             return None
     
     async def _handle_custom_questions_ai(self, page: Page, profile: Dict):
-        """Handle custom questions using DeepSeek"""
-        # Implementation similar to your existing greenhouse_applier.py
-        pass
+        """Handle custom questions using AI — not yet implemented."""
+        logger.warning("Custom question handler not implemented — questions will be skipped.")
     
     async def _find_submit_button(self, page: Page):
         """Find the submit button"""

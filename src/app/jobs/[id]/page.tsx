@@ -17,7 +17,9 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
+import { UserProfile } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/hooks/useToast';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, ArrowRight, Building2, MapPin, Clock, ExternalLink, CheckCircle, Bookmark, Check, Loader2, Zap, Download, DollarSign, Users, Layers, Target, AlertCircle, Sparkles } from 'lucide-react';
 import Link from 'next/link';
@@ -43,15 +45,6 @@ interface Job {
   skills?: string[];
 }
 
-interface UserProfile {
-  uid: string;
-  skills: string[];
-  yearsOfExperience?: number;
-  location?: string;
-  desiredSalary?: string;
-  resumeUrl?: string;
-  name?: string;
-}
 
 export default function JobDetailsPage() {
   const { id } = useParams();
@@ -126,11 +119,6 @@ export default function JobDetailsPage() {
   const calculateMatchScore = useCallback((job: Job, userProfile: UserProfile): number => {
     if (!job || !userProfile) return 0;
     
-    console.log('Calculating match score:', { 
-      userSkills: userProfile.skills?.length || 0, 
-      jobTags: job.tags?.length || 0,
-      userExp: userProfile.yearsOfExperience 
-    });
     
     // If no user skills, provide a basic score
     if (!userProfile.skills || userProfile.skills.length === 0) {
@@ -160,7 +148,6 @@ export default function JobDetailsPage() {
         )
       );
       score += (matchedSkills.length / allJobKeywords.length) * 100 * weights.skills;
-      console.log('Skill match:', matchedSkills.length, '/', allJobKeywords.length);
     }
     
     // 2. Experience Level Match
@@ -224,7 +211,6 @@ export default function JobDetailsPage() {
     }
     
     const finalScore = Math.min(Math.round(score), 100);
-    console.log('Final calculated score:', finalScore);
     return finalScore;
   }, [parseSalary]);
 
@@ -299,7 +285,6 @@ export default function JobDetailsPage() {
             // Calculate score immediately for instant display
             calculatedScore = calculateMatchScore(jobData, userData);
             setMatchScore(calculatedScore);
-            console.log('Set initial match score:', calculatedScore);
             
             // Provide basic match details immediately
             const basicReasons = [];
@@ -411,7 +396,6 @@ export default function JobDetailsPage() {
           
           // Update score if AI provides a better one
           if (data.matchResult.score && data.matchResult.score !== matchScore) {
-            console.log('Updating score from AI:', data.matchResult.score);
             setMatchScore(data.matchResult.score);
           }
         }
@@ -471,7 +455,7 @@ export default function JobDetailsPage() {
       
     } catch (error) {
       console.error("Error in application flow:", error);
-      alert('❌ Failed to track application. Please try again.');
+      toast({ title: 'Error', description: 'Failed to track application. Please try again.', variant: 'destructive' });
     } finally {
       setApplying(false);
     }
@@ -484,7 +468,7 @@ export default function JobDetailsPage() {
     
     try {
       if (!userProfile?.resumeUrl) {
-        alert("⚠️ Please upload your master resume in Settings → Resume first!");
+        toast({ title: 'Warning', description: 'Please upload your master resume in Settings → Resume first!', variant: 'destructive' });
         router.push('/settings/resume');
         setAutoApplying(false);
         return;
@@ -511,7 +495,7 @@ export default function JobDetailsPage() {
       
     } catch (error) {
       console.error("Auto-apply error:", error);
-      alert("❌ Failed to start auto-apply. Please try again.");
+      toast({ title: 'Error', description: 'Failed to start auto-apply. Please try again.', variant: 'destructive' });
     } finally {
       setAutoApplying(false);
     }

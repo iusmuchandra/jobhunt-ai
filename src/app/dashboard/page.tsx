@@ -67,13 +67,15 @@ export default function DashboardPage() {
   
   // Real Data State
   const [jobMatches, setJobMatches] = useState<JobMatch[]>([]);
-  const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
+  const [excludeKeywords, setExcludeKeywords] = useState<string[]>([]);
   const [stats, setStats] = useState<UserStats>({
     jobsFound: 0,
     jobsApplied: 0,
     interviews: 0,
   });
-  
+
+  const [totalJobsScanned, setTotalJobsScanned] = useState<number | null>(null);
+
   const [loadingData, setLoadingData] = useState(true);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
@@ -131,8 +133,10 @@ export default function DashboardPage() {
       });
 
       await batch.commit();
-      console.log("✅ Reset complete. Reloading...");
-      window.location.reload();
+      console.log("✅ Reset complete. Updating local state...");
+      // Update local state instead of reloading page
+      setJobMatches(prev => prev.map(match => ({...match, viewed: false})));
+      setIsResetting(false);
     } catch (error) {
       console.error("❌ Error resetting views:", error);
       setIsResetting(false);
@@ -194,10 +198,8 @@ export default function DashboardPage() {
         
         const hasPreferences = userData?.jobTitles && userData.jobTitles.length > 0;
 
-        if (userData?.excludedKeywords && Array.isArray(userData.excludedKeywords)) {
-           setExcludedKeywords(userData.excludedKeywords);
-        } else if (userData?.negativeFilters && Array.isArray(userData.negativeFilters)) {
-           setExcludedKeywords(userData.negativeFilters);
+        if (userData?.excludeKeywords && Array.isArray(userData.excludeKeywords)) {
+           setExcludeKeywords(userData.excludeKeywords);
         }
 
         const [matchesCount, appsCount, interviewsCount] = await Promise.all([
@@ -302,6 +304,19 @@ export default function DashboardPage() {
         setJobMatches(matches);
         setShowingGlobalJobs(false);
 
+        // Fetch latest scraper metrics for the jobs scanned count
+        try {
+          const metricsRef = collection(db, 'scraper_metrics');
+          const metricsQuery = query(metricsRef, orderBy('timestamp', 'desc'), limit(1));
+          const metricsSnap = await getDocs(metricsQuery);
+          if (!metricsSnap.empty) {
+            const latest = metricsSnap.docs[0].data();
+            setTotalJobsScanned(latest.total_jobs_scraped || null);
+          }
+        } catch (e) {
+          // Non-critical — scraper_metrics may be empty in development
+        }
+
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
       } finally {
@@ -316,34 +331,63 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user) return;
     const shouldPoll = showingGlobalJobs || (jobMatches.length === 0 && !loadingData);
-
     if (!shouldPoll) return;
-    
+
     const pollInterval = setInterval(async () => {
       try {
         const matchesRef = collection(db, 'user_job_matches');
         const q = query(
           matchesRef,
           where('userId', '==', user.uid),
-          limit(1)
+          orderBy('notifiedAt', 'desc'),
+          limit(50)
         );
-        
+
         const snapshot = await getDocs(q);
-        
+
         if (!snapshot.empty) {
-          console.log('✨ Personalized matches are ready! Reloading...');
-          window.location.reload();
+          console.log('✨ Personalized matches ready — updating state');
+
+          // Fetch the actual job data for each match
+          const jobIds = snapshot.docs.map(d => d.data().jobId).filter(Boolean);
+          const chunks: string[][] = [];
+          for (let i = 0; i < jobIds.length; i += 10) chunks.push(jobIds.slice(i, i + 10));
+
+          const jobSnapshots = await Promise.all(
+            chunks.map(chunk =>
+              getDocs(query(collection(db, 'jobs'), where(documentId(), 'in', chunk)))
+            )
+          );
+
+          const jobsMap = new Map<string, any>();
+          jobSnapshots.forEach(snap => snap.docs.forEach(d => jobsMap.set(d.id, d.data())));
+
+          const newMatches = snapshot.docs.map(doc => {
+            const data = doc.data();
+            const job = jobsMap.get(data.jobId);
+            if (!job) return null;
+            return {
+              id: doc.id,
+              jobId: data.jobId,
+              matchScore: data.matchScore || 0,
+              matchReasons: data.matchReasons || [],
+              notifiedAt: data.notifiedAt,
+              viewed: data.viewed || false,
+              job,
+            };
+          }).filter(Boolean);
+
+          setJobMatches(newMatches as any);
+          setShowingGlobalJobs(false);
           clearInterval(pollInterval);
         }
       } catch (error) {
         console.error('Error polling for matches:', error);
       }
-    }, 10000); 
-    
-    const timeout = setTimeout(() => {
-      clearInterval(pollInterval);
-    }, 300000); 
-    
+    }, 10000);
+
+    const timeout = setTimeout(() => clearInterval(pollInterval), 300000);
+
     return () => {
       clearInterval(pollInterval);
       clearTimeout(timeout);
@@ -355,9 +399,9 @@ export default function DashboardPage() {
     // 1. Filter Logic (Exclusions + Search)
     let results = jobMatches.filter(match => {
       // Exclusions
-      if (excludedKeywords.length > 0) {
+      if (excludeKeywords.length > 0) {
         const title = match.job.title.toLowerCase();
-        const isExcluded = excludedKeywords.some(keyword => title.includes(keyword.toLowerCase()));
+        const isExcluded = excludeKeywords.some(keyword => title.includes(keyword.toLowerCase()));
         if (isExcluded) return false;
       }
 
@@ -390,7 +434,7 @@ export default function DashboardPage() {
         }
     });
 
-  }, [sortBy, searchQuery, jobMatches, excludedKeywords]);
+  }, [sortBy, searchQuery, jobMatches, excludeKeywords]);
 
   const getTier = (score: number) => {
     if (score >= 95) return 'S';
@@ -446,7 +490,7 @@ export default function DashboardPage() {
               Hello, <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 animate-gradient-x">{user?.displayName?.split(' ')[0] || 'Hunter'}</span>
             </h1>
             <p className="text-gray-400 text-lg max-w-xl">
-              Your AI agent has scanned <span className="text-white font-bold">8,000+</span> jobs today. Here is your briefing.
+              Your AI agent has scanned {totalJobsScanned !== null ? <span className="text-white font-bold">{totalJobsScanned.toLocaleString()}+</span> : <span className="text-white font-bold">thousands of</span>} jobs today. Here is your briefing.
             </p>
           </div>
           
@@ -655,7 +699,7 @@ export default function DashboardPage() {
                         </div>
                         <h3 className="text-xl font-bold text-gray-300 mb-2">No matches found</h3>
                         <p className="text-gray-500 mb-4 text-center max-w-sm mx-auto">
-                            {excludedKeywords.length > 0 && jobMatches.length > 0 
+                            {excludeKeywords.length > 0 && jobMatches.length > 0 
                             ? `Hidden ${jobMatches.length - filteredAndSortedMatches.length} jobs matching your exclusions.`
                             : "We couldn't find any jobs matching your criteria right now."}
                         </p>

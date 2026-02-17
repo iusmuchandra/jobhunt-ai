@@ -1,30 +1,48 @@
-// lib/types.ts
+// src/lib/types.ts — Single canonical UserProfile interface
+
 export interface UserProfile {
-  // Basic Info
+  // Auth & Identity
+  uid: string;
   email: string;
-  displayName: string;
+  displayName: string | null;
+  photoURL?: string | null;
   phone?: string;
-  location?: string;
-  
+
+  // Subscription
+  tier: 'free' | 'pro' | 'premium' | 'enterprise';
+  subscriptionStatus?: string;
+  subscriptionId?: string;
+  stripeCustomerId?: string;
+  currentPeriodEnd?: any;
+
+  // Onboarding
+  onboarding_completed: boolean;
+  profile_completed: boolean;
+  active: boolean;
+
   // Professional Info
   currentTitle?: string;
   yearsOfExperience?: number;
+  location?: string;
   linkedinUrl?: string;
   portfolioUrl?: string;
   githubUrl?: string;
-  
+  skills?: string[];
+  experience_level?: 'entry' | 'mid' | 'senior' | 'staff';
+
   // Job Search Preferences
   searchKeywords: string[];
+  excludeKeywords: string[];  // CANONICAL — use this everywhere, not excludedKeywords
   seniorityLevels: string[];
   preferredLocations: string[];
   minMatchScore: number;
-  
-  // Auto-Apply Data
+
+  // Resume & Application
   resumeUrl?: string;
   resumeName?: string;
   coverLetterTemplate?: string;
-  
-  // Work History (for forms)
+
+  // Work History
   workHistory?: {
     company: string;
     title: string;
@@ -33,7 +51,7 @@ export interface UserProfile {
     current: boolean;
     description: string;
   }[];
-  
+
   // Education
   education?: {
     school: string;
@@ -41,12 +59,41 @@ export interface UserProfile {
     field: string;
     graduationYear: string;
   }[];
-  
-  // Additional Info
+
+  // EEO / Additional
   eligibleToWorkInUS?: boolean;
   requiresSponsorship?: boolean;
   veteranStatus?: string;
   ethnicity?: string;
   gender?: string;
   disability?: string;
+
+  // Stats
+  stats?: {
+    jobsFound: number;
+    jobsApplied: number;
+    interviews: number;
+  };
+
+  // Notifications
+  notifications?: {
+    email: boolean;
+    sms: boolean;
+    push: boolean;
+    in_app: boolean;
+  };
+
+  // AI Settings
+  aiSettings?: {
+    matchThreshold?: number;
+    resumeAnalyzed?: boolean;
+    lastResumeUpdate?: any;
+  };
+  resumeAnalysis?: any;
+
+  // Timestamps
+  createdAt?: any;
+  updatedAt?: any;
+  preferencesUpdatedAt?: any;
+  desiredSalary?: string;
 }

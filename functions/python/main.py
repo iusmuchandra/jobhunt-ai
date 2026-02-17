@@ -272,10 +272,12 @@ def store_jobs(jobs):
         job_doc = job_ref.get()
         
         if not job_doc.exists:
-            batch.set(job_ref, job)
+            # New job — set postedAt for the first time
+            job_data = {**job, 'postedAt': firestore.SERVER_TIMESTAMP}
+            batch.set(job_ref, job_data)
             new_jobs.append(job)
         else:
-            # Update scrape timestamp
+            # Existing job — only update scrape metadata, never reset postedAt
             batch.update(job_ref, {
                 'scrapedAt': firestore.SERVER_TIMESTAMP,
                 'status': 'active'

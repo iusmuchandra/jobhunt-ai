@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
@@ -81,7 +82,7 @@ export default function PreferencesPage() {
         if (docSnap.exists()) {
           const data = docSnap.data();
           setKeywords(data.searchKeywords || []);
-          setExcludeKeywords(data.excludedKeywords || []); // Load exclusions
+          setExcludeKeywords(data.excludeKeywords || []); // Load exclusions
           setSeniority(data.seniorityLevels || []);
           setLocations(data.preferredLocations || []);
           setMinMatchScore(data.minMatchScore || 60);
@@ -171,7 +172,7 @@ export default function PreferencesPage() {
       
     } catch (error) {
       console.error("Error saving preferences:", error);
-      alert("Failed to save preferences. Please try again.");
+      toast({ title: 'Error', description: 'Failed to save preferences. Please try again.', variant: 'destructive' });
     } finally {
       setSaving(false);
     }

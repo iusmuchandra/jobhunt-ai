@@ -15,32 +15,8 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
+import { UserProfile } from '@/lib/types';
 
-interface UserProfile {
-  uid: string;
-  email: string;
-  displayName: string | null;
-  photoURL: string | null;
-  tier: 'free' | 'pro' | 'premium';
-  onboarding_completed: boolean;
-  profile_completed: boolean;
-  active: boolean;
-  skills?: string[];
-  experience_level?: 'entry' | 'mid' | 'senior' | 'staff';
-  years_of_experience?: number;
-  preferred_roles?: string[];
-  stats?: {                          // ← ADD THIS
-    jobsFound: number;               // ← ADD THIS
-    jobsApplied: number;             // ← ADD THIS
-    interviews: number;              // ← ADD THIS
-  };                                 // ← ADD THIS
-  notifications?: {
-    email: boolean;
-    sms: boolean;
-    push: boolean;
-    in_app: boolean;
-  };
-}
 
 interface AuthContextType {
   user: User | null;

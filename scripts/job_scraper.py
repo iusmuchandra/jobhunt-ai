@@ -131,7 +131,7 @@ class Config:
     WORKDAY_RATE = float(os.getenv('WORKDAY_RATE', '2'))       
     
     # Batch processing
-    FIREBASE_BATCH_SIZE = 500
+    FIREBASE_BATCH_SIZE = 200  # Max 500 ops per Firestore batch; 200 jobs × 2 writes = 400
     MAX_JOBS_PER_COMPANY = 1000
     
     # Content limits
@@ -600,10 +600,7 @@ class JobScorer:
             flags.append("🏠 Remote Friendly")
         
         # 8. NEGATIVE KEYWORD FILTER (ENHANCED - FIXED)
-        negative_keywords = profile.get('excludeKeywords', [
-            'intern', 'internship', 'entry level', 'junior', 
-            'designer', 'engineer', 'analyst', 'coordinator'
-        ])
+        negative_keywords = profile.get('excludeKeywords', [])
         
         # Check both title AND description
         full_text = (title_lower + ' ' + description_lower).strip()
@@ -1329,7 +1326,6 @@ class FirebaseManager:
                     'company': job['company'],
                     'location': job.get('location', 'Not specified'),
                     'url': job['link'],
-                    'postedAt': firestore.SERVER_TIMESTAMP,
                     'expiresAt': datetime.now(timezone.utc) + timedelta(days=Config.JOB_EXPIRATION_DAYS),
                     'source': job['source'],
                     'tags': score_data['flags'],

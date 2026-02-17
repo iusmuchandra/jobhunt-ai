@@ -1,26 +1,30 @@
 import { NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { verifyAuthToken } from '@/lib/api-auth';
 
 const execAsync = promisify(exec);
 
 export async function POST(request: Request) {
   try {
-    // Verify cron secret
+    // Verify authentication: either Firebase token or cron secret
+    const uid = await verifyAuthToken(request);
     const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    const token = authHeader?.replace('Bearer ', '');
+
+    if (!uid && token !== process.env.CRON_SECRET) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     console.log('🚀 Starting job scraper...');
-    
+
     // Get the absolute path to the script
     const scriptPath = process.cwd() + '/scripts/job_scraper.py';
     const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
-    
+
     const { stdout, stderr } = await execAsync(
       `${pythonCommand} "${scriptPath}"`,
-      { 
+      {
         timeout: 600000, // 10 min
         cwd: process.cwd() + '/scripts',
         env: { ...process.env }
@@ -34,7 +38,7 @@ export async function POST(request: Request) {
     const jobsMatch = stdout.match(/Total Jobs Found: (\d+)/);
     const matchesMatch = stdout.match(/Total Matches Created: (\d+)/);
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
       message: 'Job scraper completed successfully',
       jobsScraped: jobsMatch ? parseInt(jobsMatch[1]) : 0,
@@ -44,8 +48,8 @@ export async function POST(request: Request) {
 
   } catch (error: any) {
     console.error('❌ Scraper failed:', error);
-    
-    return NextResponse.json({ 
+
+    return NextResponse.json({
       error: 'Job scraper failed',
       message: error.message,
       stderr: error.stderr?.slice(-500),
@@ -56,8 +60,11 @@ export async function POST(request: Request) {
 
 // Also support GET for testing
 export async function GET(request: Request) {
+  const uid = await verifyAuthToken(request);
   const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const token = authHeader?.replace('Bearer ', '');
+
+  if (!uid && token !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

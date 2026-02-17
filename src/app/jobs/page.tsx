@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from '@/hooks/useToast';
 import { db } from '@/lib/firebase';
 import { 
   collection, 
@@ -120,7 +121,7 @@ export default function JobsPage() {
   // Data State
   const [allJobs, setAllJobs] = useState<MatchedJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [negativeFilters, setNegativeFilters] = useState<string[]>([]);
+  const [excludeKeywords, setExcludeKeywords] = useState<string[]>([]);
   const [profileLoaded, setProfileLoaded] = useState(false);
 
   // Pagination State
@@ -180,7 +181,7 @@ export default function JobsPage() {
       }
       if (prev.length >= 4) {
         // Optional: limit to 4 items
-        alert("You can compare up to 4 jobs at a time.");
+        toast({ title: 'Limit reached', description: 'You can compare up to 4 jobs at a time.' });
         return prev;
       }
       return [...prev, jobId];
@@ -195,12 +196,8 @@ export default function JobsPage() {
           const userDoc = await getDoc(doc(db, 'users', user.uid));
           if (userDoc.exists()) {
             const userData = userDoc.data();
-            const allExclusions = Array.from(new Set([
-              ...(userData.excludedKeywords || []), 
-              ...(userData.excludeKeywords || []),
-              ...(userData.negativeFilters || [])
-            ]));
-            setNegativeFilters(allExclusions);
+            const allExclusions = userData.excludeKeywords || [];
+            setExcludeKeywords(allExclusions);
           }
         } catch (error) {
           console.error("Error fetching user profile:", error);
@@ -327,25 +324,17 @@ export default function JobsPage() {
     // FIX 1: Add safety check for job ID
     if (!job.id) return false;
 
-    if (!profileLoaded && negativeFilters.length === 0) return false;
+    if (!profileLoaded && excludeKeywords.length === 0) return false;
     
     // Robust Time Calculations
     const jobDate = getJobDate(job.postedAt);
 
-    // Debugging (Remove in prod)
-    if (statusFilter === 'today' || statusFilter === 'week') {
-      console.log(`Checking Job: ${job.title}`, {
-         jobDate: jobDate.toLocaleString(),
-         isToday: isToday(jobDate),
-         isThisWeek: isThisWeek(jobDate)
-      });
-    }
 
     // 1. Negative Filter
-    if (negativeFilters.length > 0) {
+    if (excludeKeywords.length > 0) {
       const titleLower = job.title.toLowerCase();
       const tagsLower = job.tags?.map(t => t.toLowerCase()) || [];
-      const hasNegative = negativeFilters.some(term => {
+      const hasNegative = excludeKeywords.some(term => {
         const t = term.toLowerCase().trim();
         return t && (titleLower.includes(t) || tagsLower.some(tag => tag.includes(t)));
       });

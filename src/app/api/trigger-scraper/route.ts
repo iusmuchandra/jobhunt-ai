@@ -1,19 +1,21 @@
 // src/app/api/trigger-scraper/route.ts - FIXED VERSION
 import { NextResponse } from 'next/server';
+import { verifyAuthToken, unauthorizedResponse } from '@/lib/api-auth';
 
 // Use server-only secret (NOT NEXT_PUBLIC_*)
 const SCRAPER_SECRET = process.env.SCRAPER_SECRET || process.env.CRON_SECRET;
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    // 🔒 SECURITY FIX: Verify server secret
-    const authHeader = req.headers.get('Authorization');
+    // 🔒 SECURITY FIX: Verify authentication - either Firebase token or scraper secret
+    const uid = await verifyAuthToken(request);
+    const authHeader = request.headers.get('Authorization');
     const providedSecret = authHeader?.replace('Bearer ', '');
 
-    if (!providedSecret || providedSecret !== SCRAPER_SECRET) {
+    if (!uid && (!providedSecret || providedSecret !== SCRAPER_SECRET)) {
       console.error('❌ Unauthorized scraper trigger attempt');
-      return NextResponse.json({ 
-        error: 'Unauthorized' 
+      return NextResponse.json({
+        error: 'Unauthorized'
       }, { status: 401 });
     }
 
@@ -24,8 +26,8 @@ export async function POST(req: Request) {
     const GITHUB_REPO = process.env.GITHUB_REPO || 'iusmuchandra/jobhunt-ai';
 
     if (!GITHUB_TOKEN) {
-      return NextResponse.json({ 
-        error: 'GitHub token not configured' 
+      return NextResponse.json({
+        error: 'GitHub token not configured'
       }, { status: 500 });
     }
 
@@ -48,7 +50,7 @@ export async function POST(req: Request) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('GitHub Actions trigger failed:', errorText);
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: 'Failed to trigger scraper',
         details: errorText
       }, { status: response.status });
@@ -56,15 +58,15 @@ export async function POST(req: Request) {
 
     console.log('✅ Scraper workflow triggered successfully');
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
       message: 'Job scraper triggered successfully'
     });
 
   } catch (error: any) {
     console.error('Trigger Scraper Error:', error);
-    return NextResponse.json({ 
-      error: error.message || 'Internal server error' 
+    return NextResponse.json({
+      error: error.message || 'Internal server error'
     }, { status: 500 });
   }
 }

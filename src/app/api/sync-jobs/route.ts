@@ -5,14 +5,18 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { adminDb } from '@/lib/firebase-admin';
 import { JobMatchingEngine } from '@/lib/jobs/scraper';
+import { verifyAuthToken, unauthorizedResponse } from '@/lib/api-auth';
 
 const execAsync = promisify(exec);
 
 export async function POST(request: Request) {
   try {
-    // Verify cron secret
+    // Verify authentication: either Firebase token or cron secret
+    const uid = await verifyAuthToken(request);
     const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    const token = authHeader?.replace('Bearer ', '');
+
+    if (!uid && token !== process.env.CRON_SECRET) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -31,7 +35,7 @@ export async function POST(request: Request) {
     });
 
     const newJobs = await db.all(`
-      SELECT * FROM jobs 
+      SELECT * FROM jobs
       WHERE found_at > datetime('now', '-1 hour')
       ORDER BY score DESC
     `);
@@ -68,17 +72,17 @@ export async function POST(request: Request) {
     const matcher = new JobMatchingEngine();
     await matcher.matchJobsWithUsers(jobsForMatching);
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       jobsScraped: newJobs.length,
-      jobsSynced: jobsForMatching.length 
+      jobsSynced: jobsForMatching.length
     });
 
   } catch (error) {
     console.error('Job sync failed:', error);
-    return NextResponse.json({ 
-      error: 'Job sync failed', 
-      details: error instanceof Error ? error.message : String(error) 
+    return NextResponse.json({
+      error: 'Job sync failed',
+      details: error instanceof Error ? error.message : String(error)
     }, { status: 500 });
   }
 }
