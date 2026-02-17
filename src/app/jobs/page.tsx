@@ -147,6 +147,7 @@ export default function JobsPage() {
   const [remoteFilter, setRemoteFilter] = useState<string>('all');
   const [matchScoreFilter, setMatchScoreFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sortBy, setSortBy] = useState<string>('match'); // 'match' | 'latest' | 'company'
 
   // --- Helper: Chunk Array ---
   const chunkArray = <T,>(array: T[], size: number): T[][] => {
@@ -344,6 +345,9 @@ export default function JobsPage() {
     }
   };
 
+  // Calculate unique companies for the dropdown — sorted alphabetically across all loaded jobs
+  const uniqueCompanies = Array.from(new Set(jobs.map(job => job.company).filter(Boolean))).sort();
+
   // --- Filter Logic (Enhanced with Robust Time Parsing) ---
   const filteredJobs = jobs.filter(job => {
     // FIX 1: Add safety check for job ID
@@ -414,10 +418,16 @@ export default function JobsPage() {
     }
 
     return matchesSearch && matchesCompany && matchesStatus && matchesRemote && matchesSalary && matchesScore;
+  }).sort((a, b) => {
+    if (sortBy === 'latest') {
+      return getJobDate(b.postedAt).getTime() - getJobDate(a.postedAt).getTime();
+    }
+    if (sortBy === 'company') {
+      return (a.company || '').localeCompare(b.company || '');
+    }
+    // Default: best match score
+    return (b.matchScore || 0) - (a.matchScore || 0);
   });
-
-  // Calculate unique companies for the dropdown
-  const uniqueCompanies = Array.from(new Set(jobs.map(job => job.company).filter(Boolean))).sort();
 
   const getTierColor = (score: number) => {
     if (score >= 95) return 'text-yellow-400';
@@ -433,6 +443,7 @@ export default function JobsPage() {
     setRemoteFilter('all');
     setMatchScoreFilter('all');
     setStatusFilter('all');
+    setSortBy('match');
   };
 
   return (
@@ -544,6 +555,22 @@ export default function JobsPage() {
                     </select>
                   </div>
                 ))}
+
+                {/* Sort By */}
+                <div className="relative min-w-[160px]">
+                  <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+                    <Zap className="w-4 h-4" />
+                  </div>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    className="w-full appearance-none bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-xl h-12 pl-10 pr-8 text-sm font-medium text-blue-300 focus:outline-none focus:border-blue-500/60 transition-colors cursor-pointer"
+                  >
+                    <option value="match" className="bg-gray-900 text-white">⚡ Best Match</option>
+                    <option value="latest" className="bg-gray-900 text-white">🕐 Latest Posted</option>
+                    <option value="company" className="bg-gray-900 text-white">🏢 Company A–Z</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -573,7 +600,7 @@ export default function JobsPage() {
           ) : (
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row items-center justify-between px-2 gap-4">
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-4 flex-wrap">
                   <p className="text-gray-400 text-sm font-medium">
                     Found <span className="text-white">{filteredJobs.length}</span> matches
                   </p>
@@ -581,6 +608,21 @@ export default function JobsPage() {
                     <span className="px-3 py-1 bg-blue-500/20 text-blue-300 text-xs font-bold rounded-full border border-blue-500/30">
                       Showing New Matches Only
                     </span>
+                  )}
+                  {/* Active Sort Badge */}
+                  <span className="px-3 py-1 bg-white/5 text-gray-400 text-xs font-semibold rounded-full border border-white/10 flex items-center gap-1.5">
+                    {sortBy === 'latest' && <><Clock className="w-3 h-3 text-amber-400" /> Sorted: Latest Posted</>}
+                    {sortBy === 'company' && <><Building2 className="w-3 h-3 text-blue-400" /> Sorted: Company A–Z</>}
+                    {sortBy === 'match' && <><Zap className="w-3 h-3 text-purple-400" /> Sorted: Best Match</>}
+                  </span>
+                  {/* Active Company Filter Badge */}
+                  {companyFilter !== 'all' && (
+                    <button
+                      onClick={() => setCompanyFilter('all')}
+                      className="px-3 py-1 bg-blue-500/15 text-blue-300 text-xs font-bold rounded-full border border-blue-500/30 flex items-center gap-1.5 hover:bg-blue-500/25 transition-colors"
+                    >
+                      <Building2 className="w-3 h-3" /> {companyFilter} <X className="w-3 h-3" />
+                    </button>
                   )}
                 </div>
 
@@ -591,6 +633,35 @@ export default function JobsPage() {
                   <button onClick={handleNextPage} disabled={!hasMore || loading} className="px-3 py-1.5 bg-white text-black hover:bg-gray-200 rounded-lg text-xs font-bold disabled:opacity-30 transition-colors">Next</button>
                 </div>
               </div>
+
+              {/* Company Quick-Filter Pills (visible when there are companies to show) */}
+              {uniqueCompanies.length > 0 && uniqueCompanies.length <= 20 && (
+                <div className="flex flex-wrap gap-2 px-2 pb-1">
+                  <button
+                    onClick={() => setCompanyFilter('all')}
+                    className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+                      companyFilter === 'all'
+                        ? 'bg-white text-black border-white'
+                        : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {uniqueCompanies.map(company => (
+                    <button
+                      key={company}
+                      onClick={() => setCompanyFilter(companyFilter === company ? 'all' : company)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+                        companyFilter === company
+                          ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-500/20'
+                          : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      {company}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Holographic Job Cards */}
               <div className="grid grid-cols-1 gap-5">
