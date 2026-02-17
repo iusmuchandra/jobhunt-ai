@@ -118,7 +118,7 @@ export default function JobsPage() {
   const { user } = useAuth();
   
   // Data State
-  const [jobs, setJobs] = useState<MatchedJob[]>([]);
+  const [allJobs, setAllJobs] = useState<MatchedJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [negativeFilters, setNegativeFilters] = useState<string[]>([]);
   const [profileLoaded, setProfileLoaded] = useState(false);
