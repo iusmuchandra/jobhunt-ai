@@ -17,7 +17,6 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import { UserProfile } from '@/lib/types';
 
-
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
@@ -53,29 +52,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const createUserProfile = async (user: User, displayName?: string) => {
-  const userRef = doc(db, 'users', user.uid);
-  const profile: UserProfile = {
-    uid: user.uid,
-    email: user.email!,
-    displayName: displayName || user.displayName || null,
-    photoURL: user.photoURL || null,
-    tier: 'free',
-    onboarding_completed: false,
-    profile_completed: false,
-    active: true,
-    stats: {                         // ← ADD THIS
-      jobsFound: 0,                  // ← ADD THIS
-      jobsApplied: 0,                // ← ADD THIS
-      interviews: 0,                 // ← ADD THIS
-    },                               // ← ADD THIS
-    notifications: {
-      email: true,
-      sms: false,
-      push: true,
-      in_app: true,
-    },
-  };
-  // ... rest of function
+    const userRef = doc(db, 'users', user.uid);
+    
+    // Initialize the profile with all mandatory fields from UserProfile
+    const profile: UserProfile = {
+      uid: user.uid,
+      email: user.email!,
+      displayName: displayName || user.displayName || null,
+      photoURL: user.photoURL || null,
+      tier: 'free',
+      onboarding_completed: false,
+      profile_completed: false,
+      active: true,
+
+      // Mandatory preference fields added to match src/lib/types.ts
+      searchKeywords: [],
+      excludeKeywords: [], 
+      seniorityLevels: [],
+      preferredLocations: [],
+      minMatchScore: 70, // Default threshold for AI matching
+
+      stats: {
+        jobsFound: 0,
+        jobsApplied: 0,
+        interviews: 0,
+      },
+      notifications: {
+        email: true,
+        sms: false,
+        push: true,
+        in_app: true,
+      },
+    };
 
     await setDoc(userRef, {
       ...profile,
