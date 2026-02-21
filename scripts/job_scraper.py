@@ -1098,6 +1098,7 @@ class FirebaseManager:
                     'requirements':job.get('requirements', []),
                     'seniority':   score_data.get('seniority'),
                     'matchScore':  score_data['score'],
+                    'postedAt':    job.get('posted_date') or datetime.now(timezone.utc),
                     'scrapedAt':   firestore.SERVER_TIMESTAMP,
                 }, merge=True)
 
@@ -1378,6 +1379,7 @@ class ScraperFactory:
 
                     # Date handling
                     updated_at = j.get('updated_at', '')
+                    posted_dt  = None
                     try:
                         if updated_at:
                             posted_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
@@ -1397,6 +1399,7 @@ class ScraperFactory:
                         'requirements':   requirements,
                         'salary':         salary,
                         'posted_days_ago':days_ago,
+                        'posted_date':    posted_dt,
                     })
                 except Exception as e:
                     logger.debug(f"Error parsing Greenhouse job: {e}")
@@ -1429,6 +1432,7 @@ class ScraperFactory:
                     location = j.get('location', '') or j.get('locationName', '') or 'Remote'
 
                     published = j.get('publishedAt', '')
+                    posted_dt = None
                     try:
                         if published:
                             posted_dt = datetime.fromisoformat(published.replace('Z', '+00:00'))
@@ -1448,6 +1452,7 @@ class ScraperFactory:
                         'requirements':   requirements,
                         'salary':         salary,
                         'posted_days_ago':days_ago,
+                        'posted_date':    posted_dt,
                     })
                 except Exception as e:
                     logger.debug(f"Error parsing Ashby job: {e}")
@@ -1485,6 +1490,7 @@ class ScraperFactory:
                     location = j.get('categories', {}).get('location', '') or 'Remote'
 
                     created_at = j.get('createdAt', 0)
+                    posted_dt  = None
                     try:
                         if created_at:
                             posted_dt = datetime.fromtimestamp(created_at / 1000, tz=timezone.utc)
@@ -1504,6 +1510,7 @@ class ScraperFactory:
                         'requirements':   requirements,
                         'salary':         salary,
                         'posted_days_ago':days_ago,
+                        'posted_date':    posted_dt,
                     })
                 except Exception as e:
                     logger.debug(f"Error parsing Lever job: {e}")
