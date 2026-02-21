@@ -5,6 +5,7 @@
 
 import { adminDb } from '@/lib/firebase-admin';
 import { deepseek } from '@/lib/deepseek';
+import type { QueryDocumentSnapshot, DocumentData } from 'firebase-admin/firestore';
 
 interface MatchResult {
   score: number;
@@ -34,14 +35,17 @@ export class JobMatchingEngine {
     }
 
     // Fetch jobs in chunks (Firestore 'in' limit = 10)
-    const allJobDocs: { id: string; data: any }[] = [];
+    const allJobDocs: { id: string; data: DocumentData }[] = [];
     for (let i = 0; i < jobIds.length; i += 10) {
       const chunk = jobIds.slice(i, i + 10);
       const snap = await adminDb
         .collection('jobs')
         .where('__name__', 'in', chunk)
         .get();
-      snap.docs.forEach(d => allJobDocs.push({ id: d.id, data: d.data() }));
+      // FIX: explicit type on QueryDocumentSnapshot to resolve implicit 'any'
+      snap.docs.forEach((d: QueryDocumentSnapshot) =>
+        allJobDocs.push({ id: d.id, data: d.data() })
+      );
     }
 
     console.log(`[Matcher] Matching ${allJobDocs.length} jobs against ${usersSnapshot.docs.length} users`);
@@ -51,7 +55,7 @@ export class JobMatchingEngine {
     for (const userDoc of usersSnapshot.docs) {
       const userId = userDoc.id;
 
-      // Load all job profiles for this user
+      // Load all active job profiles for this user
       const profilesSnap = await adminDb
         .collection('users')
         .doc(userId)
@@ -60,9 +64,9 @@ export class JobMatchingEngine {
         .get();
 
       // If no profiles exist, fall back to user-level preferences with a synthetic profile
-      const profiles = profilesSnap.empty
-        ? [{ id: null, data: userDoc.data() }]  // null profileId = legacy
-        : profilesSnap.docs.map(d => ({ id: d.id, data: d.data() }));
+      const profiles: { id: string | null; data: DocumentData }[] = profilesSnap.empty
+        ? [{ id: null, data: userDoc.data() }]
+        : profilesSnap.docs.map((d: QueryDocumentSnapshot) => ({ id: d.id, data: d.data() }));
 
       for (const profile of profiles) {
         const profileData = profile.data;
@@ -71,16 +75,7 @@ export class JobMatchingEngine {
           // Quick keyword pre-filter before the expensive AI call
           if (!this.quickMatch(profileData, job.data)) continue;
 
-          // Check for existing match to avoid duplicates
-          const existing = await adminDb
-            .collection('user_job_matches')
-            .where('userId', '==', userId)
-            .where('jobId', '==', job.id)
-            ...(profile.id ? [['profileId', '==', profile.id]] : [])  // ← type hack for demo; use actual query below
-            .limit(1)
-            .get();
-
-          // Simpler duplicate check
+          // Duplicate check — scoped to profileId when available
           const existingQuery = profile.id
             ? adminDb.collection('user_job_matches')
                 .where('userId', '==', userId)
@@ -102,7 +97,7 @@ export class JobMatchingEngine {
             );
 
             if (matchResult.score >= 70) {
-              const matchDoc: Record<string, any> = {
+              const matchDoc: Record<string, unknown> = {
                 userId,
                 jobId: job.id,
                 matchScore: matchResult.score,
@@ -122,7 +117,9 @@ export class JobMatchingEngine {
               await adminDb.collection('user_job_matches').add(matchDoc);
               matchCount++;
 
-              console.log(`[Matcher] ✅ Match: ${userId}/${profile.id || 'default'} → ${job.data.title} @ ${job.data.company} (${matchResult.score}%)`);
+              console.log(
+                `[Matcher] ✅ Match: ${userId}/${profile.id || 'default'} → ${job.data.title} @ ${job.data.company} (${matchResult.score}%)`
+              );
             }
           } catch (err) {
             console.error(`[Matcher] AI error for job ${job.id}, user ${userId}:`, err);
@@ -138,13 +135,13 @@ export class JobMatchingEngine {
    * Fast keyword pre-filter before calling the AI.
    * Prevents wasting AI credits on obviously irrelevant jobs.
    */
-  private quickMatch(profile: any, job: any): boolean {
-    const titleLower = (job.title || '').toLowerCase();
-    
+  private quickMatch(profile: DocumentData, job: DocumentData): boolean {
+    const titleLower = (job.title as string || '').toLowerCase();
+
     // At least one keyword must appear in the job title (word-boundary match)
     const keywords: string[] = profile.keywords || profile.searchKeywords || profile.jobTitles || [];
     if (keywords.length > 0) {
-      const hasKeyword = keywords.some(kw => {
+      const hasKeyword = keywords.some((kw: string) => {
         try {
           return new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i').test(titleLower);
         } catch {
@@ -157,7 +154,7 @@ export class JobMatchingEngine {
     // Exclude keywords must not appear
     const excludes: string[] = profile.excludeKeywords || [];
     if (excludes.length > 0) {
-      const isExcluded = excludes.some(ex => {
+      const isExcluded = excludes.some((ex: string) => {
         try {
           return new RegExp(`\\b${ex.toLowerCase()}\\b`, 'i').test(titleLower);
         } catch {
@@ -175,8 +172,8 @@ export class JobMatchingEngine {
    */
   async updateUserMatchScores(userId: string, profileId?: string): Promise<void> {
     const userDoc = await adminDb.collection('users').doc(userId).get();
-    
-    let profileData: any;
+
+    let profileData: DocumentData | undefined;
     if (profileId) {
       const profileDoc = await adminDb
         .collection('users').doc(userId)
@@ -207,7 +204,7 @@ export class JobMatchingEngine {
         const matchResult = await deepseek.calculateMatchScore(profileData, jobDoc.data());
 
         if (matchResult.score >= 70) {
-          const matchDocData: Record<string, any> = {
+          const matchDocData: Record<string, unknown> = {
             userId,
             jobId: jobDoc.id,
             matchScore: matchResult.score,
@@ -219,7 +216,7 @@ export class JobMatchingEngine {
             createdAt: new Date(),
           };
 
-          if (profileId) matchDocData.profileId = profileId; // ✅ FIX applied here too
+          if (profileId) matchDocData.profileId = profileId;
 
           await adminDb.collection('user_job_matches').add(matchDocData);
           updated++;

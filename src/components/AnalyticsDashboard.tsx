@@ -79,7 +79,7 @@ export default function AnalyticsDashboard() {
   if (!analytics) return null;
 
   // Prepare Data for Charts
-  const roleData = analytics.top_roles.slice(0, 5).map(r => ({
+  const roleData = (analytics.top_roles ?? []).slice(0, 5).map(r => ({
       name: r.role,
       value: r.count
   }));
@@ -138,7 +138,7 @@ export default function AnalyticsDashboard() {
               <span className="text-xs font-bold uppercase tracking-wider">Market Rate</span>
             </div>
             <p className="text-4xl font-black text-white tracking-tight">
-              ${(analytics.top_roles.reduce((sum, role) => sum + role.avg_salary, 0) / Math.max(analytics.top_roles.length, 1) / 1000).toFixed(0)}k
+              ${((analytics.top_roles ?? []).reduce((sum, role) => sum + role.avg_salary, 0) / Math.max((analytics.top_roles ?? []).length, 1) / 1000).toFixed(0)}k
             </p>
             <p className="text-sm text-gray-500 mt-1">Average annual comp</p>
           </div>
@@ -153,7 +153,7 @@ export default function AnalyticsDashboard() {
               <span className="text-xs font-bold uppercase tracking-wider">Coverage</span>
             </div>
             <p className="text-4xl font-black text-white tracking-tight">
-              {analytics.top_companies.length}+
+              {(analytics.top_companies ?? []).length}+
             </p>
             <p className="text-sm text-gray-500 mt-1">Top tier tech companies</p>
           </div>
@@ -172,7 +172,7 @@ export default function AnalyticsDashboard() {
                 </h3>
             </div>
             <div className="space-y-3">
-                {analytics.top_companies.slice(0, 5).map((company, i) => (
+                {(analytics.top_companies ?? []).slice(0, 5).map((company, i) => (
                     <div key={company.company} className="flex items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-colors">
                         <div className="flex items-center gap-3">
                             <span className="text-xs font-bold text-gray-500">#{i + 1}</span>
@@ -244,7 +244,7 @@ export default function AnalyticsDashboard() {
                 <Zap className="w-5 h-5 text-yellow-500" /> Highest Paying
             </h3>
             <div className="space-y-3">
-                {analytics.salary_insights.highest_paying_companies.slice(0, 5).map((company, i) => (
+                {(analytics.salary_insights?.highest_paying_companies ?? []).slice(0, 5).map((company, i) => (
                     <div key={company.company} className="flex items-center justify-between p-3 rounded-xl bg-white/5">
                         <span className="font-bold text-gray-200">{company.company}</span>
                         <span className="text-sm font-bold text-green-400">${(company.avg_salary / 1000).toFixed(0)}k</span>
@@ -259,7 +259,7 @@ export default function AnalyticsDashboard() {
                 <MapPin className="w-5 h-5 text-blue-500" /> Top Hubs
             </h3>
             <div className="flex flex-wrap gap-2">
-                {analytics.top_locations.slice(0, 8).map((loc) => (
+                {(analytics.top_locations ?? []).slice(0, 8).map((loc) => (
                     <div key={loc.location} className="px-3 py-1.5 rounded-lg bg-gray-900 border border-white/10 flex items-center gap-2">
                         <span className="text-sm font-medium text-gray-300 capitalize">{loc.location}</span>
                         <span className="text-xs font-bold text-blue-400 bg-blue-500/10 px-1.5 rounded">{loc.count}</span>
