@@ -17,13 +17,16 @@ import {
   doc,
   getDoc
 } from 'firebase/firestore';
-import { 
-  Search, MapPin, Clock, Building2, Plus, DollarSign, 
-  ArrowRight, Target, ChevronLeft, ChevronRight, Sparkles, 
-  X, Briefcase, Zap, Bookmark, Filter, Scale // Added Scale icon
+import { JobProfile } from '@/lib/types';
+import {
+  Search, MapPin, Clock, Building2, Plus, DollarSign,
+  ArrowRight, Target, ChevronLeft, ChevronRight, ChevronDown, Sparkles,
+  X, Briefcase, Zap, Bookmark, Filter, Scale, Loader2 // Added Scale icon
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 // Added isToday and isThisWeek for better filtering
 import { formatDistanceToNow, isToday, isThisWeek } from 'date-fns';
+import { migrateToProfiles } from '@/lib/migrate-to-profiles';
 
 // --- Interfaces ---
 interface Job {
@@ -123,6 +126,9 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(true);
   const [excludeKeywords, setExcludeKeywords] = useState<string[]>([]);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profiles, setProfiles] = useState<JobProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [loadingProfiles, setLoadingProfiles] = useState(false);
 
   // Pagination State
   const [page, setPage] = useState(1);
@@ -188,37 +194,88 @@ export default function JobsPage() {
     });
   };
 
-  // --- 1. Fetch User Profile ---
+  // --- 1. Fetch User Profile & Job Profiles ---
   useEffect(() => {
     const fetchUserProfile = async () => {
       if (user) {
         try {
           const userDoc = await getDoc(doc(db, 'users', user.uid));
+          let userData: any = {};
           if (userDoc.exists()) {
-            const userData = userDoc.data();
+            userData = userDoc.data();
             const allExclusions = userData.excludeKeywords || [];
             setExcludeKeywords(allExclusions);
+          }
+
+          // Fetch job profiles
+          setLoadingProfiles(true);
+          const profilesRef = collection(db, 'users', user.uid, 'job_profiles');
+          const profilesSnap = await getDocs(profilesRef);
+          let profilesList = profilesSnap.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          })) as JobProfile[];
+
+          // If no profiles but user has preferences, migrate
+          if (profilesList.length === 0 && userDoc.exists()) {
+            const migrated = await migrateToProfiles(user.uid, userData);
+            if (migrated) {
+              // Reload profiles after migration
+              const newProfilesSnap = await getDocs(profilesRef);
+              profilesList = newProfilesSnap.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+              })) as JobProfile[];
+            }
+          }
+
+          setProfiles(profilesList);
+
+          // Set default selected profile (first active profile, or first profile)
+          if (profilesList.length > 0) {
+            const activeProfile = profilesList.find(p => p.isActive) || profilesList[0];
+            setSelectedProfileId(activeProfile.id);
+          } else {
+            setSelectedProfileId(null);
           }
         } catch (error) {
           console.error("Error fetching user profile:", error);
         } finally {
           setProfileLoaded(true);
+          setLoadingProfiles(false);
         }
+      } else {
+        setProfiles([]);
+        setSelectedProfileId(null);
+        setLoadingProfiles(false);
       }
     };
     fetchUserProfile();
   }, [user]);
 
-  // --- 2. Main Fetch — loads ALL matched jobs once, client-side pagination after ---
-  const fetchAllMatchedJobs = useCallback(async () => {
-    if (!user) return;
+  // Update excludeKeywords when profile changes
+  useEffect(() => {
+    if (selectedProfileId && profiles.length > 0) {
+      const profile = profiles.find(p => p.id === selectedProfileId);
+      if (profile) {
+        setExcludeKeywords(profile.excludeKeywords || []);
+      }
+    } else {
+      setExcludeKeywords([]);
+    }
+  }, [selectedProfileId, profiles]);
+
+  // --- 2. Main Fetch — loads ALL matched jobs for selected profile ---
+  const fetchAllMatchedJobs = useCallback(async (profileId: string) => {
+    if (!user || !profileId) return;
     setLoading(true);
 
     try {
-      // Fetch ALL matches for this user — no limit, so sort/filter works across everything
+      // Fetch matches for this user and profile
       const matchesQuery = query(
         collection(db, 'user_job_matches'),
         where('userId', '==', user.uid),
+        where('profileId', '==', profileId),
         orderBy('matchScore', 'desc'),
         orderBy('notifiedAt', 'desc')
       );
@@ -286,8 +343,13 @@ export default function JobsPage() {
   }, [user]);
 
   useEffect(() => {
-    if (user && allJobs.length === 0) fetchAllMatchedJobs();
-  }, [user]);
+    if (user && selectedProfileId) {
+      setAllJobs([]); // Clear previous jobs
+      fetchAllMatchedJobs(selectedProfileId);
+    } else {
+      setAllJobs([]); // No profile selected, clear jobs
+    }
+  }, [user, selectedProfileId]);
 
   // --- Client-side page handlers (instant — no Firestore calls) ---
   const handleNextPage = () => {
@@ -310,7 +372,7 @@ export default function JobsPage() {
         tags: ["Python", "TensorFlow", "React"],
         postedAt: serverTimestamp(),
       });
-      fetchAllMatchedJobs();
+      if (selectedProfileId) fetchAllMatchedJobs(selectedProfileId);
     } catch (error) {
       console.error("Error adding job:", error);
     }
@@ -462,6 +524,45 @@ export default function JobsPage() {
               </button>
             </Link>
           </div>
+        </div>
+
+        {/* Profile Switcher */}
+        <div className="flex items-center justify-between bg-gray-900/40 backdrop-blur-xl border border-gray-800 rounded-2xl p-4 mb-6">
+          <div className="flex items-center gap-3">
+            <Target className="w-5 h-5 text-blue-400 flex-shrink-0" />
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Viewing matches for</p>
+              {profiles.length === 0 ? (
+                <p className="text-gray-400 text-sm">No profiles yet.</p>
+              ) : loadingProfiles ? (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
+                  <span className="text-gray-400 text-sm">Loading profiles...</span>
+                </div>
+              ) : (
+                <select
+                  value={selectedProfileId || ''}
+                  onChange={(e) => {
+                    setSelectedProfileId(e.target.value);
+                    setAllJobs([]);
+                  }}
+                  className="bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-1.5 text-sm font-medium focus:outline-none focus:border-blue-500 cursor-pointer"
+                >
+                  {profiles.map(profile => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.emoji} {profile.name}{!profile.isActive ? ' (Inactive)' : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+          <Link href="/settings/profiles">
+            <Button variant="outline" className="border-gray-700 text-gray-300 hover:text-white text-sm">
+              <Plus className="w-4 h-4 mr-1" />
+              {profiles.length === 0 ? 'Create Profile' : 'Manage Profiles'}
+            </Button>
+          </Link>
         </div>
 
         {/* Sticky Glass Filter Bar */}

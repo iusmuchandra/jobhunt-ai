@@ -4,6 +4,7 @@
 .env.production
 serviceAccountKey.json
 firebase-admin-key.json
+project_dump.txt
 
 # --- Next.js / Node.js (Standard Ignores) ---
 node_modules/

@@ -97,3 +97,21 @@ export interface UserProfile {
   preferencesUpdatedAt?: any;
   desiredSalary?: string;
 }
+
+export interface JobProfile {
+  id: string;
+  name: string;
+  emoji: string;
+  isActive: boolean;
+  createdAt?: any;
+  updatedAt?: any;
+  jobTitles: string[];
+  keywords: string[];
+  excludeKeywords: string[];
+  location: string;
+  remotePreference: 'remote' | 'hybrid' | 'onsite' | 'any';
+  salaryMin: number;
+  experienceLevel: string;
+  jobTypes: string[];
+  industries: string[];
+}

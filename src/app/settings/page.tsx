@@ -20,10 +20,10 @@ export default function SettingsPage() {
 
   const settingsOptions = [
     {
-      title: "Job Preferences",
-      description: "Set your job search criteria and match preferences",
+      title: "Job Profiles",
+      description: "Manage multiple search profiles for different roles",
       icon: Target,
-      href: "/settings/preferences",
+      href: "/settings/profiles",
       color: "text-blue-400",
       bgColor: "bg-blue-400/10"
     },
