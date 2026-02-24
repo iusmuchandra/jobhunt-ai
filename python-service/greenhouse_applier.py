@@ -29,12 +29,16 @@ import asyncio
 import logging
 import os
 import sys
+import warnings
 import httpx
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 from difflib import SequenceMatcher
+
+# Suppress noisy "unclosed transport" warnings from Playwright on Windows
+warnings.filterwarnings("ignore", category=ResourceWarning)
 
 from dotenv import load_dotenv
 import firebase_admin
@@ -355,7 +359,7 @@ async def get_pending_applications() -> List[dict]:
         query = (
             db.collection('applications')
             .where('method', '==', 'auto-apply')
-            .where('status', 'in', ['pending', 'queued'])
+            .where('status', 'in', ['pending', 'queued', 'Queued', 'Pending', 'QUEUED', 'PENDING'])
             .order_by('createdAt', direction=firestore.Query.DESCENDING)
             .limit(20)  # Raised from 10; concurrency handles throughput
         )
@@ -1093,5 +1097,7 @@ async def main():
 
 if __name__ == "__main__":
     if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        # WindowsProactorEventLoopPolicy is deprecated in 3.14+
+        # Use asyncio.run() directly — it selects the correct loop on Windows automatically
+        pass
     asyncio.run(main())
