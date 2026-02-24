@@ -126,7 +126,7 @@ class Config:
     MAX_CONCURRENCY     = int(os.getenv('MAX_CONCURRENCY', '20'))       # Raised from 15
     RETRY_ATTEMPTS      = int(os.getenv('RETRY_ATTEMPTS', '3'))
     RETRY_DELAY         = float(os.getenv('RETRY_DELAY', '2.0'))
-    JOB_EXPIRATION_DAYS = int(os.getenv('JOB_EXPIRATION_DAYS', '30'))
+    JOB_EXPIRATION_DAYS = int(os.getenv('JOB_EXPIRATION_DAYS', '14'))
 
     # Per-ATS concurrency caps (prevent hammering a single ATS)
     GREENHOUSE_CONCURRENCY = int(os.getenv('GREENHOUSE_CONCURRENCY', '8'))
@@ -1025,7 +1025,7 @@ class FirebaseManager:
         if email in self.user_cache:
             return self.user_cache[email]
         try:
-            user = auth.get_user_by_email(email)
+            user = await asyncio.to_thread(auth.get_user_by_email, email)
             self.user_cache[email] = user.uid
             return user.uid
         except auth.UserNotFoundError:
@@ -1259,23 +1259,41 @@ async def cleanup_expired_jobs(firebase_manager: FirebaseManager):
         return
     try:
         now = datetime.now(timezone.utc)
+        start_time = time.time()
+
+        # 1. CLEAN UP EXPIRED JOBS
         expired_query = firebase_manager.db.collection('jobs').where('expiresAt', '<', now).stream()
         batch = firebase_manager.db.batch()
-        count = 0
-        start_time = time.time()
+        job_count = 0
 
         for doc in expired_query:
             batch.delete(doc.reference)
-            count += 1
-            if count % Config.FIREBASE_BATCH_SIZE == 0:
+            job_count += 1
+            if job_count % Config.FIREBASE_BATCH_SIZE == 0:
                 await asyncio.to_thread(batch.commit)
                 batch = firebase_manager.db.batch()
-                logger.info(f"🗑️  Deleted {count} expired jobs ({time.time()-start_time:.1f}s)")
 
-        if count % Config.FIREBASE_BATCH_SIZE != 0:
+        if job_count % Config.FIREBASE_BATCH_SIZE != 0:
             await asyncio.to_thread(batch.commit)
 
-        logger.info(f"✅ Cleanup: {count} expired jobs removed in {time.time()-start_time:.1f}s")
+        # 2. CLEAN UP OLD MATCHES (Prevents the UI limit(50) dangling-reference bug)
+        two_weeks_ago = now - timedelta(days=14)
+        expired_matches = firebase_manager.db.collection('user_job_matches').where('createdAt', '<', two_weeks_ago).stream()
+
+        match_batch = firebase_manager.db.batch()
+        match_count = 0
+
+        for doc in expired_matches:
+            match_batch.delete(doc.reference)
+            match_count += 1
+            if match_count % Config.FIREBASE_BATCH_SIZE == 0:
+                await asyncio.to_thread(match_batch.commit)
+                match_batch = firebase_manager.db.batch()
+
+        if match_count % Config.FIREBASE_BATCH_SIZE != 0:
+            await asyncio.to_thread(match_batch.commit)
+
+        logger.info(f"✅ Cleanup: {job_count} jobs and {match_count} matches removed in {time.time()-start_time:.1f}s")
     except Exception as e:
         logger.error(f"❌ Cleanup error: {e}")
 

@@ -430,7 +430,7 @@ export default function DashboardPage() {
                 if (d.seconds) return d.seconds * 1000;
                 return new Date(d).getTime();
             };
-            return getSafeDate(b.notifiedAt) - getSafeDate(a.notifiedAt);
+            return getSafeDate(b.job?.postedAt) - getSafeDate(a.job?.postedAt);
         }
     });
 
