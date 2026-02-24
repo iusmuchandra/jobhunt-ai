@@ -71,11 +71,11 @@ function chunkArray<T>(array: T[], size: number): T[][] {
 }
 
 function getJobDate(postedAt: any): Date {
-  if (!postedAt) return new Date();
+  if (!postedAt) return new Date(0);
   if (postedAt.toDate) return postedAt.toDate();
   if (postedAt.seconds) return new Date(postedAt.seconds * 1000);
   if (typeof postedAt === 'string') return new Date(postedAt);
-  return new Date();
+  return new Date(0);
 }
 
 function wordBoundaryMatch(text: string, term: string): boolean {
