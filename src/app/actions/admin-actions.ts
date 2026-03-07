@@ -3,6 +3,26 @@
 
 import { adminAuth } from '@/lib/firebase-admin';
 import { cookies } from 'next/headers';
+import { SESSION_COOKIE_CANDIDATES } from '@/lib/session-cookie';
+
+async function requireAdmin() {
+  const cookieStore = cookies();
+  const sessionCookie = SESSION_COOKIE_CANDIDATES
+    .map((cookieName) => cookieStore.get(cookieName)?.value)
+    .find(Boolean);
+
+  if (!sessionCookie) {
+    throw new Error('Not authenticated');
+  }
+
+  const decodedClaims = await adminAuth.verifySessionCookie(sessionCookie);
+
+  if (!decodedClaims?.admin) {
+    throw new Error('Not authorized');
+  }
+
+  return decodedClaims;
+}
 
 /**
  * Server action to trigger job scraper
@@ -10,19 +30,7 @@ import { cookies } from 'next/headers';
  */
 export async function triggerJobScraper() {
   try {
-    // Verify the user is authenticated and is an admin
-    // You should add admin check here based on your user model
-    const sessionCookie = cookies().get('session')?.value;
-    
-    if (!sessionCookie) {
-      throw new Error('Not authenticated');
-    }
-
-    // Verify session
-    const decodedClaims = await adminAuth.verifySessionCookie(sessionCookie);
-    
-    // Add admin check here
-    // Example: if (!decodedClaims.admin) throw new Error('Not authorized');
+    await requireAdmin();
     
     const CRON_SECRET = process.env.CRON_SECRET;
     
@@ -62,14 +70,7 @@ export async function triggerJobScraper() {
  */
 export async function syncJobs() {
   try {
-    const sessionCookie = cookies().get('session')?.value;
-    
-    if (!sessionCookie) {
-      throw new Error('Not authenticated');
-    }
-
-    const decodedClaims = await adminAuth.verifySessionCookie(sessionCookie);
-    // Add admin check
+    await requireAdmin();
     
     const CRON_SECRET = process.env.CRON_SECRET;
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
