@@ -15,8 +15,14 @@ const ratelimit = new Ratelimit({
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 export async function POST(request: Request) {
-  // 1. Clone request before reading body (body can only be read once)
-  const clonedRequest = request.clone();
+  try {
+    if (!DEEPSEEK_API_KEY) {
+      console.error('DEEPSEEK_API_KEY is not configured');
+      return NextResponse.json({ error: 'AI service unavailable' }, { status: 503 });
+    }
+
+    // 1. Clone request before reading body (body can only be read once)
+    const clonedRequest = request.clone();
 
   // 2. Verify token
   const uid = await verifyAuthToken(request);
@@ -91,8 +97,15 @@ Be concise, practical, and encouraging. Provide specific, actionable advice.`;
     }, { status: 500 });
   }
 
-  return NextResponse.json({
-    success: true,
-    message: reply
-  });
+    return NextResponse.json({
+      success: true,
+      message: reply
+    });
+  } catch (error: any) {
+    console.error('Chat route failed:', error);
+    return NextResponse.json(
+      { error: 'Failed to process chat request', details: error?.message || 'Unknown error' },
+      { status: 500 }
+    );
+  }
 }
