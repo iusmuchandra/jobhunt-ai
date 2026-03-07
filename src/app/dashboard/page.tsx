@@ -60,6 +60,15 @@ interface UserStats {
   interviews: number;
 }
 
+interface ScrapeStatus {
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: number;
+  message: string;
+  totalJobs?: number;
+  processedJobs?: number;
+  updatedAt?: any;
+}
+
 export default function DashboardPage() {
   // --- Hooks & State ---
   const { user, loading } = useAuth();
@@ -77,6 +86,7 @@ export default function DashboardPage() {
   const [totalJobsScanned, setTotalJobsScanned] = useState<number | null>(null);
 
   const [loadingData, setLoadingData] = useState(true);
+  const [scrapeStatus, setScrapeStatus] = useState<ScrapeStatus | null>(null);
   const [showingGlobalJobs, setShowingGlobalJobs] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
   const [isResetting, setIsResetting] = useState(false); 
@@ -394,6 +404,48 @@ export default function DashboardPage() {
     };
   }, [showingGlobalJobs, jobMatches.length, loadingData, user]);
 
+
+  // --- Scrape status polling (async background process) ---
+  useEffect(() => {
+    let mounted = true;
+
+    async function fetchScrapeStatus() {
+      try {
+        const statusQuery = query(
+          collection(db, 'background_jobs'),
+          where('type', '==', 'job_matching'),
+          orderBy('startedAt', 'desc'),
+          limit(1)
+        );
+
+        const snap = await getDocs(statusQuery);
+        if (!mounted || snap.empty) return;
+
+        const data = snap.docs[0].data() as any;
+        const nextStatus: ScrapeStatus = {
+          status: data.status || 'queued',
+          progress: Number.isFinite(data.progress) ? data.progress : 0,
+          message: data.message || 'Preparing scraper run...',
+          totalJobs: data.totalJobs,
+          processedJobs: data.processedJobs,
+          updatedAt: data.updatedAt,
+        };
+
+        setScrapeStatus(nextStatus);
+      } catch (error) {
+        console.error('Failed to fetch scrape status:', error);
+      }
+    }
+
+    void fetchScrapeStatus();
+    const timer = setInterval(fetchScrapeStatus, 8000);
+
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, []);
+
   // --- Filtering & Sorting Logic ---
   const filteredAndSortedMatches = useMemo(() => {
     // 1. Filter Logic (Exclusions + Search)
@@ -524,7 +576,37 @@ export default function DashboardPage() {
           </div>
         )}
 
+
+        {scrapeStatus && (
+          <section className="bg-[#0F0F10] border border-white/10 rounded-2xl p-4 sm:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+              <h2 className="text-lg sm:text-xl font-bold text-white">Scrape Status</h2>
+              <span className="text-xs uppercase tracking-wider text-gray-400">
+                {scrapeStatus.status}
+              </span>
+            </div>
+
+            <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, scrapeStatus.progress))}%` }}
+              />
+            </div>
+
+            <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm">
+              <p className="text-gray-300">{scrapeStatus.message}</p>
+              <p className="text-gray-400">
+                {Math.round(scrapeStatus.progress)}%
+                {typeof scrapeStatus.totalJobs === 'number' && (
+                  <span> • {scrapeStatus.processedJobs ?? 0}/{scrapeStatus.totalJobs} jobs</span>
+                )}
+              </p>
+            </div>
+          </section>
+        )}
+
         {/* 2. STATS GRID (NEO-GLASS) */}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           
           {/* Matches Card */}
