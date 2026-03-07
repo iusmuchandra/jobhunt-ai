@@ -8,9 +8,22 @@ import { JobMatchingEngine } from '@/lib/jobs/scraper';
 import { verifyAuthToken } from '@/lib/api-auth';
 
 const execAsync = promisify(exec);
-const FIRESTORE_BATCH_LIMIT = 500;
+const FIRESTORE_BATCH_LIMIT = 450;
+const MAX_BATCH_RETRIES = 3;
 
 type JobForMatching = { id: string; data: any };
+
+async function commitWithRetry(batch: any, attempt = 1): Promise<void> {
+  try {
+    await batch.commit();
+  } catch (error) {
+    if (attempt >= MAX_BATCH_RETRIES) throw error;
+    const delayMs = attempt * 500;
+    console.warn(`Batch commit failed (attempt ${attempt}). Retrying in ${delayMs}ms...`, error);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    await commitWithRetry(batch, attempt + 1);
+  }
+}
 
 async function syncJobsToFirestore(newJobs: any[]): Promise<JobForMatching[]> {
   const jobsForMatching: JobForMatching[] = [];
@@ -38,7 +51,7 @@ async function syncJobsToFirestore(newJobs: any[]): Promise<JobForMatching[]> {
       jobsForMatching.push({ id: jobRef.id, data: job });
     }
 
-    await batch.commit();
+    await commitWithRetry(batch);
     console.log(`Synced chunk ${Math.floor(i / FIRESTORE_BATCH_LIMIT) + 1}: ${chunk.length} jobs`);
   }
 

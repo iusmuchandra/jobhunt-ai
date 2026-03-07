@@ -16,8 +16,14 @@ const ratelimit = new Ratelimit({
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 export async function POST(request: Request) {
-  // 1. Clone request before reading body (body can only be read once)
-  const clonedRequest = request.clone();
+  try {
+    if (!DEEPSEEK_API_KEY) {
+      console.error('DEEPSEEK_API_KEY is not configured');
+      return NextResponse.json({ error: 'AI service unavailable' }, { status: 503 });
+    }
+
+    // 1. Clone request before reading body (body can only be read once)
+    const clonedRequest = request.clone();
 
   // 2. Verify token
   const uid = await verifyAuthToken(request);
@@ -142,12 +148,19 @@ Use professional but authentic tone. DO NOT use generic templates.
     }, { status: 500 });
   }
 
-  return NextResponse.json({
-    success: true,
-    coverLetter,
-    job: {
-      title: job?.title,
-      company: job?.company
-    }
-  });
+    return NextResponse.json({
+      success: true,
+      coverLetter,
+      job: {
+        title: job?.title,
+        company: job?.company
+      }
+    });
+  } catch (error: any) {
+    console.error('Generate cover letter route failed:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate cover letter', details: error?.message || 'Unknown error' },
+      { status: 500 }
+    );
+  }
 }

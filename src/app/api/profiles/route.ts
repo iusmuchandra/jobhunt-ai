@@ -3,6 +3,17 @@ import { verifyAuthToken, unauthorizedResponse } from '@/lib/api-auth';
 import { adminDb } from '@/lib/firebase-admin';
 import { Timestamp } from 'firebase-admin/firestore';
 
+const FIRESTORE_SAFE_BATCH_SIZE = 450;
+
+async function deleteDocsInChunks(docs: any[]) {
+  for (let i = 0; i < docs.length; i += FIRESTORE_SAFE_BATCH_SIZE) {
+    const chunk = docs.slice(i, i + FIRESTORE_SAFE_BATCH_SIZE);
+    const batch = adminDb.batch();
+    chunk.forEach((doc: any) => batch.delete(doc.ref));
+    await batch.commit();
+  }
+}
+
 // GET /api/profiles - Get all profiles for the authenticated user
 export async function GET(request: Request) {
   try {
@@ -215,15 +226,10 @@ export async function DELETE(request: Request) {
       .where('profileId', '==', id)
       .get();
 
-    const batch = adminDb.batch();
-    matchesSnapshot.docs.forEach((doc: any) => {
-      batch.delete(doc.ref);
-    });
+    await deleteDocsInChunks(matchesSnapshot.docs);
 
-    // Delete the profile itself
-    batch.delete(profileRef);
-
-    await batch.commit();
+    // Delete the profile itself in a separate write to avoid batch overflow
+    await profileRef.delete();
 
     return NextResponse.json({ success: true });
 
