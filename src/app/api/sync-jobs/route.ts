@@ -29,6 +29,7 @@ async function syncJobsToFirestore(newJobs: any[]): Promise<JobForMatching[]> {
         source: job.ats_source,
         seniority: job.seniority,
         score: job.score,
+        description: job.description || null,
         postedAt: new Date(job.found_at),
         createdAt: new Date(),
         indexed: false,
@@ -44,15 +45,52 @@ async function syncJobsToFirestore(newJobs: any[]): Promise<JobForMatching[]> {
   return jobsForMatching;
 }
 
-function runMatchingInBackground(jobsForMatching: JobForMatching[]) {
+async function updateBackgroundJob(jobId: string, payload: Record<string, any>) {
+  await adminDb.collection('background_jobs').doc(jobId).set({
+    ...payload,
+    updatedAt: new Date(),
+  }, { merge: true });
+}
+
+function runMatchingInBackground(jobsForMatching: JobForMatching[], backgroundJobId: string | null) {
   if (!jobsForMatching.length) return;
 
   const matcher = new JobMatchingEngine();
-  void matcher.matchJobsWithUsers(jobsForMatching).then(() => {
-    console.log(`Background matching complete for ${jobsForMatching.length} jobs`);
-  }).catch((error) => {
-    console.error('Background matching failed:', error);
-  });
+  void (async () => {
+    try {
+      if (backgroundJobId) {
+        await updateBackgroundJob(backgroundJobId, {
+          status: 'running',
+          progress: 35,
+          message: 'Matching jobs to user profiles...',
+        });
+      }
+
+      await matcher.matchJobsWithUsers(jobsForMatching);
+
+      if (backgroundJobId) {
+        await updateBackgroundJob(backgroundJobId, {
+          status: 'completed',
+          progress: 100,
+          message: 'Matching completed successfully',
+          completedAt: new Date(),
+          processedJobs: jobsForMatching.length,
+        });
+      }
+
+      console.log(`Background matching complete for ${jobsForMatching.length} jobs`);
+    } catch (error) {
+      if (backgroundJobId) {
+        await updateBackgroundJob(backgroundJobId, {
+          status: 'failed',
+          progress: 100,
+          message: error instanceof Error ? error.message : 'Background matching failed',
+          completedAt: new Date(),
+        });
+      }
+      console.error('Background matching failed:', error);
+    }
+  })();
 }
 
 export async function POST(request: Request) {
@@ -68,7 +106,7 @@ export async function POST(request: Request) {
 
     // 1. Run Python scraper
     console.log('Running Python job scraper...');
-    const { stdout, stderr } = await execAsync(
+    const { stdout } = await execAsync(
       'cd scripts && python job_scraper.py --no-email',
       { timeout: 600000 } // 10 min timeout
     );
@@ -94,14 +132,31 @@ export async function POST(request: Request) {
     const jobsForMatching = await syncJobsToFirestore(newJobs);
     console.log(`Synced ${jobsForMatching.length} jobs to Firebase`);
 
+    let backgroundJobId: string | null = null;
+    if (jobsForMatching.length > 0) {
+      const ref = adminDb.collection('background_jobs').doc();
+      backgroundJobId = ref.id;
+      await ref.set({
+        type: 'job_matching',
+        status: 'queued',
+        progress: 20,
+        message: 'Jobs synced. Queuing AI matching...',
+        totalJobs: jobsForMatching.length,
+        processedJobs: 0,
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+
     // 4. Trigger AI matching asynchronously to avoid request timeouts
-    runMatchingInBackground(jobsForMatching);
+    runMatchingInBackground(jobsForMatching, backgroundJobId);
 
     return NextResponse.json({
       success: true,
       jobsScraped: newJobs.length,
       jobsSynced: jobsForMatching.length,
-      matching: jobsForMatching.length ? 'started' : 'skipped'
+      matching: jobsForMatching.length ? 'started' : 'skipped',
+      backgroundJobId,
     });
 
   } catch (error) {

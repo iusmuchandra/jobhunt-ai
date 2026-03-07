@@ -114,6 +114,59 @@ export class JobScraper {
  * Matches users with jobs based on their profile
  */
 export class JobMatchingEngine {
+
+  private getInternalApiBaseUrl(): string {
+    return process.env.INTERNAL_API_BASE_URL || process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+  }
+
+  private getInternalApiToken(): string | undefined {
+    return process.env.INTERNAL_API_TOKEN || process.env.CRON_SECRET;
+  }
+
+  private async extractTopRequiredSkills(description: string): Promise<string[]> {
+    if (!description?.trim()) return [];
+
+    const token = this.getInternalApiToken();
+    if (!token) return [];
+
+    try {
+      const response = await fetch(`${this.getInternalApiBaseUrl()}/api/internal/extract-skills`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ description }),
+      });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const data = await response.json();
+      if (!Array.isArray(data?.topSkills)) return [];
+      return data.topSkills.slice(0, 3).map((skill: unknown) => String(skill).trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  private async ensureTopRequiredSkills(jobId: string, jobData: any): Promise<string[]> {
+    if (Array.isArray(jobData.topRequiredSkills) && jobData.topRequiredSkills.length > 0) {
+      return jobData.topRequiredSkills;
+    }
+
+    const topRequiredSkills = await this.extractTopRequiredSkills(jobData.description || '');
+
+    if (topRequiredSkills.length > 0) {
+      await adminDb.collection('jobs').doc(jobId).set({
+        topRequiredSkills,
+        skillsExtractedAt: new Date(),
+      }, { merge: true });
+    }
+
+    return topRequiredSkills;
+  }
   async processNewJobs(jobs: JobListing[]): Promise<void> {
     // 1. Save jobs to Firestore
     const batch = adminDb.batch();
@@ -149,8 +202,14 @@ export class JobMatchingEngine {
       const userProfile = userDoc.data();
 
       for (const job of jobs) {
+        const topRequiredSkills = await this.ensureTopRequiredSkills(job.id, job.data);
+
         // Calculate match score using AI
-        const matchResult = await deepseek.calculateMatchScore(userProfile, job.data);
+        const matchResult = await deepseek.calculateMatchScore(userProfile, {
+          ...job.data,
+          topRequiredSkills,
+          skills: topRequiredSkills.length ? topRequiredSkills : (job.data as any).skills,
+        });
 
         // Only save high-quality matches (70+)
         if (matchResult.score >= 70) {
@@ -159,7 +218,9 @@ export class JobMatchingEngine {
             userId: userDoc.id,
             jobId: job.id,
             matchScore: matchResult.score,
-            matchReasons: matchResult.reasons,
+            matchReasons: topRequiredSkills.length
+              ? [...matchResult.reasons, `Top required skills: ${topRequiredSkills.join(', ')}`]
+              : matchResult.reasons,
             weaknesses: matchResult.weaknesses,
             notifiedAt: new Date(),
             viewed: false,

@@ -5,8 +5,11 @@ import { adminAuth } from '@/lib/firebase-admin';
 import { cookies } from 'next/headers';
 import { SESSION_COOKIE_CANDIDATES } from '@/lib/session-cookie';
 
-async function requireAdmin() {
-  const cookieStore = cookies();
+type CookieStoreLike = {
+  get: (name: string) => { value?: string } | undefined;
+};
+
+export async function requireAdminWithCookieStore(cookieStore: CookieStoreLike) {
   const sessionCookie = SESSION_COOKIE_CANDIDATES
     .map((cookieName) => cookieStore.get(cookieName)?.value)
     .find(Boolean);
@@ -22,6 +25,11 @@ async function requireAdmin() {
   }
 
   return decodedClaims;
+}
+
+async function requireAdmin() {
+  const cookieStore = cookies();
+  return requireAdminWithCookieStore(cookieStore);
 }
 
 /**
